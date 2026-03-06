@@ -1,0 +1,22 @@
+
+Player
+    ID: string
+    Password: string
+    Session Token: string
+
+Equipment:
+    Player ID: string
+    Equipment Key: string
+    Quantity: unsigned int
+    Faction: int
+
+Character:
+    Player ID: string
+    Character ID: string
+    Skin Key: string
+    Weapon 1: string
+    Weapon 2: string
+    Weapon 3: string
+    Equipment 1: string
+    Equipment 2: string
+    Faction: int
