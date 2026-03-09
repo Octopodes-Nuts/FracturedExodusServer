@@ -1,0 +1,102 @@
+package server_test
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	server "fracturedexodusserver/src"
+)
+
+type fakeMatchmakingManager struct {
+	mu        sync.Mutex
+	instances []server.GameInstance
+	calls     int
+}
+
+func (manager *fakeMatchmakingManager) StartGameInstance(ctx context.Context, players []server.Player, requestedPort string) (server.GameInstance, error) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	manager.calls++
+	instance := server.GameInstance{
+		ID:       "instance-1",
+		Host:     "127.0.0.1",
+		Port:     "7777",
+		Protocol: "udp",
+		JoinKey:  "join-key",
+	}
+	manager.instances = append(manager.instances, instance)
+	return instance, nil
+}
+
+func (manager *fakeMatchmakingManager) ListInstances() []server.GameInstance {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	instances := make([]server.GameInstance, len(manager.instances))
+	copy(instances, manager.instances)
+	return instances
+}
+
+func TestMatchmakingQueueAndStatus(t *testing.T) {
+	manager := &fakeMatchmakingManager{}
+	api := server.NewMatchmakingAPI("NA", manager)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	queueRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/queue", strings.NewReader(`{"id":1,"username":"pilot"}`))
+	queueResponse := httptest.NewRecorder()
+	mux.ServeHTTP(queueResponse, queueRequest)
+
+	if queueResponse.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d", http.StatusAccepted, queueResponse.Code)
+	}
+
+	var queuePayload map[string]any
+	if err := json.NewDecoder(queueResponse.Body).Decode(&queuePayload); err != nil {
+		t.Fatalf("decode queue response: %v", err)
+	}
+	ticketID, ok := queuePayload["ticketId"].(string)
+	if !ok || ticketID == "" {
+		t.Fatalf("expected ticketId string")
+	}
+
+	statusRequest := httptest.NewRequest(http.MethodGet, "/matchmaking/status?ticketId="+ticketID, nil)
+	statusResponse := httptest.NewRecorder()
+	mux.ServeHTTP(statusResponse, statusRequest)
+
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, statusResponse.Code)
+	}
+}
+
+func TestMatchmakingJoinStartsInstance(t *testing.T) {
+	manager := &fakeMatchmakingManager{}
+	api := server.NewMatchmakingAPI("NA", manager)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	joinRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/join", strings.NewReader(`{"id":1,"username":"pilot"}`))
+	joinResponse := httptest.NewRecorder()
+	mux.ServeHTTP(joinResponse, joinRequest)
+
+	if joinResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, joinResponse.Code)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(joinResponse.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode join response: %v", err)
+	}
+
+	if payload["status"] != "ready" {
+		t.Fatalf("expected status ready, got %v", payload["status"])
+	}
+
+	if payload["instance"] == nil {
+		t.Fatalf("expected instance in response")
+	}
+}

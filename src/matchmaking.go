@@ -23,9 +23,14 @@ type matchTicket struct {
 	error    string
 }
 
+type MatchmakingManager interface {
+	StartGameInstance(ctx context.Context, players []Player, requestedPort string) (GameInstance, error)
+	ListInstances() []GameInstance
+}
+
 type MatchmakingAPI struct {
 	region    string
-	manager   *GameServerManager
+	manager   MatchmakingManager
 	matchSize int
 	maxWait   time.Duration
 	mu        sync.Mutex
@@ -35,7 +40,7 @@ type MatchmakingAPI struct {
 	rng       *rand.Rand
 }
 
-func NewMatchmakingAPI(region string, manager *GameServerManager) *MatchmakingAPI {
+func NewMatchmakingAPI(region string, manager MatchmakingManager) *MatchmakingAPI {
 	api := &MatchmakingAPI{
 		region:    region,
 		manager:   manager,
