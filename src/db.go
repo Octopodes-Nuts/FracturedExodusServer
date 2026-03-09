@@ -30,13 +30,20 @@ var initStatements = []string{
 	`CREATE TABLE IF NOT EXISTS players (
 		id TEXT PRIMARY KEY,
 		password TEXT NOT NULL,
-		session_token TEXT
+		account_name TEXT NOT NULL
+	);`,
+	`CREATE TABLE IF NOT EXISTS session_tokens (
+		id BIGSERIAL PRIMARY KEY,
+		player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+		session_token TEXT NOT NULL,
+		expiration TIMESTAMPTZ NOT NULL,
+		UNIQUE(player_id, session_token)
 	);`,
 	`CREATE TABLE IF NOT EXISTS equipment (
 		id BIGSERIAL PRIMARY KEY,
 		player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
 		equipment_key TEXT NOT NULL,
-		quantity INTEGER NOT NULL DEFAULT 0,
+		quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
 		faction INTEGER NOT NULL DEFAULT 0
 	);`,
 	`CREATE TABLE IF NOT EXISTS characters (
@@ -54,9 +61,10 @@ var initStatements = []string{
 }
 
 var resetStatements = []string{
-	`DROP TABLE IF EXISTS characters;`,
-	`DROP TABLE IF EXISTS equipment;`,
-	`DROP TABLE IF EXISTS players;`,
+	`DROP TABLE IF EXISTS equipment CASCADE;`,
+	`DROP TABLE IF EXISTS characters CASCADE;`,
+	`DROP TABLE IF EXISTS session_tokens CASCADE;`,
+	`DROP TABLE IF EXISTS players CASCADE;`,
 }
 
 func DefaultDBConfig() DBConfig {
@@ -101,6 +109,27 @@ func OpenDB(ctx context.Context, cfg DBConfig) (*sql.DB, error) {
 	return database, nil
 }
 
+type Database struct {
+	DB *sql.DB
+}
+
+var databaseInstance *Database
+
+func GetDatabase(ctx context.Context) (*Database, error) {
+	if databaseInstance != nil {
+		return databaseInstance, nil
+	}
+
+	cfg := DefaultDBConfig()
+	db, err := OpenDB(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	databaseInstance = &Database{DB: db}
+	return databaseInstance, nil
+}
+
 func InitDB(ctx context.Context, database *sql.DB) error {
 	return execStatements(ctx, database, initStatements)
 }
@@ -123,6 +152,15 @@ func execStatements(ctx context.Context, database *sql.DB, statements []string) 
 	}
 
 	return transaction.Commit()
+}
+
+// get database response for query
+func submitQuery(ctx context.Context, database *sql.DB, query string, args ...interface{}) (*sql.Rows, error) {
+	return database.QueryContext(ctx, query, args...)
+}
+
+func submitExec(ctx context.Context, database *sql.DB, query string, args ...interface{}) (sql.Result, error) {
+	return database.ExecContext(ctx, query, args...)
 }
 
 func getEnvOrDefault(key string, fallback string) string {

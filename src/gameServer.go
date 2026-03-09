@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,8 @@ type GameServerConfig struct {
 	ImageName    string
 	DockerFile   string
 	BuildContext string
+	GamePort     string
+	Protocol     string
 }
 
 func DefaultGameServerConfig() GameServerConfig {
@@ -24,6 +28,8 @@ func DefaultGameServerConfig() GameServerConfig {
 		ImageName:    getEnvOrDefault("GAME_IMAGE", "fractured-exodus-game:dev"),
 		DockerFile:   getEnvOrDefault("GAME_DOCKERFILE", "docker/dev.Dockerfile"),
 		BuildContext: getEnvOrDefault("GAME_BUILD_CONTEXT", "."),
+		GamePort:     getEnvOrDefault("GAME_PORT", "8080"),
+		Protocol:     getEnvOrDefault("GAME_PROTOCOL", "udp"),
 	}
 }
 
@@ -33,6 +39,9 @@ type GameInstance struct {
 	ContainerName string            `json:"containerName"`
 	Image         string            `json:"image"`
 	Host          string            `json:"host"`
+	Port          string            `json:"port"`
+	Protocol      string            `json:"protocol"`
+	JoinKey       string            `json:"joinKey"`
 	Ports         map[string]string `json:"ports"`
 	Players       []Player          `json:"players"`
 	StartedAt     string            `json:"startedAt"`
@@ -53,7 +62,7 @@ func NewGameServerManager(config GameServerConfig) *GameServerManager {
 	}
 }
 
-func (manager *GameServerManager) StartGameInstance(ctx context.Context, players []Player) (GameInstance, error) {
+func (manager *GameServerManager) StartGameInstance(ctx context.Context, players []Player, requestedPort string) (GameInstance, error) {
 	manager.buildOnce.Do(func() {
 		manager.buildErr = manager.buildImage(ctx)
 	})
@@ -62,12 +71,23 @@ func (manager *GameServerManager) StartGameInstance(ctx context.Context, players
 	}
 
 	containerName := fmt.Sprintf("game-instance-%d", time.Now().UnixNano())
-	containerID, err := manager.runContainer(ctx, containerName)
+	containerID, err := manager.runContainer(ctx, containerName, requestedPort)
 	if err != nil {
 		return GameInstance{}, err
 	}
 
 	ports, err := manager.inspectPorts(ctx, containerName)
+	if err != nil {
+		return GameInstance{}, err
+	}
+
+	containerPort := fmt.Sprintf("%s/%s", manager.config.GamePort, manager.config.Protocol)
+	hostPort := ports[containerPort]
+	if hostPort == "" {
+		hostPort = requestedPort
+	}
+
+	joinKey, err := generateJoinKey()
 	if err != nil {
 		return GameInstance{}, err
 	}
@@ -78,6 +98,9 @@ func (manager *GameServerManager) StartGameInstance(ctx context.Context, players
 		ContainerName: containerName,
 		Image:         manager.config.ImageName,
 		Host:          "127.0.0.1",
+		Port:          hostPort,
+		Protocol:      manager.config.Protocol,
+		JoinKey:       joinKey,
 		Ports:         ports,
 		Players:       players,
 		StartedAt:     time.Now().UTC().Format(time.RFC3339),
@@ -101,8 +124,15 @@ func (manager *GameServerManager) buildImage(ctx context.Context) error {
 	return cmd.Run()
 }
 
-func (manager *GameServerManager) runContainer(ctx context.Context, containerName string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "run", "-d", "-P", "--name", containerName, manager.config.ImageName)
+func (manager *GameServerManager) runContainer(ctx context.Context, containerName string, requestedPort string) (string, error) {
+	containerPort := fmt.Sprintf("%s/%s", manager.config.GamePort, manager.config.Protocol)
+	var cmd *exec.Cmd
+	if requestedPort != "" {
+		portMapping := fmt.Sprintf("%s:%s", requestedPort, containerPort)
+		cmd = exec.CommandContext(ctx, "docker", "run", "-d", "--rm", "-p", portMapping, "--name", containerName, manager.config.ImageName)
+	} else {
+		cmd = exec.CommandContext(ctx, "docker", "run", "-d", "--rm", "-P", "--name", containerName, manager.config.ImageName)
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -136,6 +166,44 @@ func (manager *GameServerManager) inspectPorts(ctx context.Context, containerNam
 	return ports, nil
 }
 
+func (manager *GameServerManager) ListInstances() []GameInstance {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	instances := make([]GameInstance, 0, len(manager.instances))
+	for _, instance := range manager.instances {
+		instances = append(instances, instance)
+	}
+
+	return instances
+}
+
+func (manager *GameServerManager) StopAll(ctx context.Context) error {
+	manager.mu.Lock()
+	instances := make([]GameInstance, 0, len(manager.instances))
+	for _, instance := range manager.instances {
+		instances = append(instances, instance)
+	}
+	manager.mu.Unlock()
+
+	for _, instance := range instances {
+		cmd := exec.CommandContext(ctx, "docker", "stop", instance.ContainerName)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func generateJoinKey() (string, error) {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
 type GameServerAPI struct {
 	manager *GameServerManager
 }
@@ -156,6 +224,7 @@ func (api *GameServerAPI) handleStart(response http.ResponseWriter, request *htt
 
 	var payload struct {
 		Players []Player `json:"players"`
+		Port    string   `json:"port"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 		response.WriteHeader(http.StatusBadRequest)
@@ -165,7 +234,7 @@ func (api *GameServerAPI) handleStart(response http.ResponseWriter, request *htt
 	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Minute)
 	defer cancel()
 
-	instance, err := api.manager.StartGameInstance(ctx, payload.Players)
+	instance, err := api.manager.StartGameInstance(ctx, payload.Players, payload.Port)
 	if err != nil {
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]string{

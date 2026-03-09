@@ -53,6 +53,7 @@ func NewMatchmakingAPI(region string, manager *GameServerManager) *MatchmakingAP
 
 func (api *MatchmakingAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/matchmaking/queue", api.handleQueue)
+	mux.HandleFunc("/matchmaking/join", api.handleJoin)
 	mux.HandleFunc("/matchmaking/status", api.handleStatus)
 	mux.HandleFunc("/matchmaking/cancel", api.handleCancel)
 }
@@ -84,6 +85,54 @@ func (api *MatchmakingAPI) handleQueue(response http.ResponseWriter, request *ht
 		"status":   "queued",
 		"ticketId": ticket,
 		"region":   api.region,
+	})
+}
+
+func (api *MatchmakingAPI) handleJoin(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		response.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var joinRequest struct {
+		ID       int64  `json:"id"`
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&joinRequest); err != nil {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	instances := api.manager.ListInstances()
+	if len(instances) == 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		instance, err := api.manager.StartGameInstance(ctx, nil, "")
+		if err != nil {
+			response.Header().Set("Content-Type", "application/json")
+			response.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"status":  "error",
+				"message": "failed to start server",
+				"error":   err.Error(),
+			})
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":   "ready",
+			"instance": instance,
+		})
+		return
+	}
+
+	instance := instances[0]
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(response).Encode(map[string]any{
+		"status":   "ready",
+		"instance": instance,
 	})
 }
 
@@ -198,7 +247,7 @@ func (api *MatchmakingAPI) tryCreateMatch() {
 	api.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	instance, err := api.manager.StartGameInstance(ctx, players)
+	instance, err := api.manager.StartGameInstance(ctx, players, "")
 	cancel()
 
 	api.mu.Lock()

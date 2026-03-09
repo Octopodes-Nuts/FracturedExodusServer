@@ -87,6 +87,10 @@ func startServer() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		if err := gameServerManager.StopAll(shutdownCtx); err != nil {
+			log.Printf("failed to stop game servers: %v", err)
+		}
+
 		shutdownErrors <- httpServer.Shutdown(shutdownCtx)
 	}()
 

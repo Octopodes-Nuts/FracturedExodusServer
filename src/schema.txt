@@ -2,7 +2,12 @@
 Player
     ID: string
     Password: string
+    Account Name: string
+
+SessionToken
+    Player ID: string
     Session Token: string
+    Expiration: DateTime
 
 Equipment:
     Player ID: string
