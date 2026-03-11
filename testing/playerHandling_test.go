@@ -68,8 +68,8 @@ func TestPlayerAccountInfo(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if payload["version"] != "dev-build" {
-		t.Fatalf("expected version dev-build, got %v", payload["version"])
+	if payload["buildVersion"] != "dev-build" {
+		t.Fatalf("expected buildVersion dev-build, got %v", payload["buildVersion"])
 	}
 }
 
@@ -93,13 +93,13 @@ func TestPlayerEquipmentAndCharacters(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodGet, "/player/equipmentAndCharacters", nil)
+	request := httptest.NewRequest(http.MethodPost, "/player/characters", strings.NewReader(`{"sessionToken":""}`))
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
 
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, response.Code)
 	}
 
 	var payload map[string]any
@@ -107,11 +107,8 @@ func TestPlayerEquipmentAndCharacters(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if _, ok := payload["equipment"]; !ok {
-		t.Fatalf("expected equipment field")
-	}
-	if _, ok := payload["characters"]; !ok {
-		t.Fatalf("expected characters field")
+	if payload["status"] != "error" {
+		t.Fatalf("expected error status, got %v", payload["status"])
 	}
 }
 
@@ -120,7 +117,7 @@ func TestPlayerEquipmentAndCharactersMethodNotAllowed(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/player/equipmentAndCharacters", nil)
+	request := httptest.NewRequest(http.MethodGet, "/player/characters", nil)
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)

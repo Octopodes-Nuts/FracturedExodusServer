@@ -12,7 +12,6 @@ import (
 
 const (
 	defaultMatchSize = 12
-	defaultMaxWait   = 30 * time.Second
 )
 
 type matchTicket struct {
@@ -21,6 +20,13 @@ type matchTicket struct {
 	status   string
 	instance *GameInstance
 	error    string
+	partyID  string
+}
+
+type matchGroup struct {
+	id        string
+	ticketIDs []string
+	queuedAt  time.Time
 }
 
 type MatchmakingManager interface {
@@ -32,9 +38,8 @@ type MatchmakingAPI struct {
 	region    string
 	manager   MatchmakingManager
 	matchSize int
-	maxWait   time.Duration
 	mu        sync.Mutex
-	waiting   []string
+	waiting   []matchGroup
 	tickets   map[string]*matchTicket
 	startedAt time.Time
 	rng       *rand.Rand
@@ -45,8 +50,7 @@ func NewMatchmakingAPI(region string, manager MatchmakingManager) *MatchmakingAP
 		region:    region,
 		manager:   manager,
 		matchSize: defaultMatchSize,
-		maxWait:   defaultMaxWait,
-		waiting:   []string{},
+		waiting:   []matchGroup{},
 		tickets:   make(map[string]*matchTicket),
 		startedAt: time.Now().UTC(),
 		rng:       rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -63,33 +67,49 @@ func (api *MatchmakingAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/matchmaking/cancel", api.handleCancel)
 }
 
+func (api *MatchmakingAPI) SetMatchSize(size int) {
+	if size <= 0 {
+		return
+	}
+	api.mu.Lock()
+	api.matchSize = size
+	api.mu.Unlock()
+}
+
 func (api *MatchmakingAPI) handleQueue(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 
-	var playerData struct {
-		ID       int64  `json:"id"`
-		Username string `json:"username"`
+	var queueRequest struct {
+		PartyID  string   `json:"partyId"`
+		Players  []Player `json:"players"`
+		ID       int64    `json:"id"`
+		Username string   `json:"username"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&playerData); err != nil {
+	if err := json.NewDecoder(request.Body).Decode(&queueRequest); err != nil {
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	player := Player{
-		ID:       playerData.ID,
-		Username: playerData.Username,
+	players := queueRequest.Players
+	if len(players) == 0 {
+		if queueRequest.ID == 0 || queueRequest.Username == "" {
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		players = []Player{{ID: queueRequest.ID, Username: queueRequest.Username}}
 	}
 
-	ticket := api.enqueuePlayer(player)
+	partyID, tickets := api.enqueueGroup(queueRequest.PartyID, players)
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(response).Encode(map[string]any{
-		"status":   "queued",
-		"ticketId": ticket,
-		"region":   api.region,
+		"status":    "queued",
+		"ticketIds": tickets,
+		"partyId":   partyID,
+		"region":    api.region,
 	})
 }
 
@@ -100,44 +120,32 @@ func (api *MatchmakingAPI) handleJoin(response http.ResponseWriter, request *htt
 	}
 
 	var joinRequest struct {
-		ID       int64  `json:"id"`
-		Username string `json:"username"`
+		TicketID string `json:"ticketId"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&joinRequest); err != nil {
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
-	instances := api.manager.ListInstances()
-	if len(instances) == 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		instance, err := api.manager.StartGameInstance(ctx, nil, "")
-		if err != nil {
-			response.Header().Set("Content-Type", "application/json")
-			response.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(response).Encode(map[string]any{
-				"status":  "error",
-				"message": "failed to start server",
-				"error":   err.Error(),
-			})
-			return
-		}
-		response.Header().Set("Content-Type", "application/json")
-		response.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":   "ready",
-			"instance": instance,
-		})
+	if joinRequest.TicketID == "" {
+		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	instance := instances[0]
+	api.mu.Lock()
+	ticket, ok := api.tickets[joinRequest.TicketID]
+	api.mu.Unlock()
+	if !ok {
+		response.WriteHeader(http.StatusNotFound)
+		return
+	}
+
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{
-		"status":   "ready",
-		"instance": instance,
+		"status":   ticket.status,
+		"ticketId": joinRequest.TicketID,
+		"partyId":  ticket.partyID,
+		"instance": ticket.instance,
 	})
 }
 
@@ -194,19 +202,34 @@ func (api *MatchmakingAPI) handleCancel(response http.ResponseWriter, request *h
 	})
 }
 
-func (api *MatchmakingAPI) enqueuePlayer(player Player) string {
+func (api *MatchmakingAPI) enqueueGroup(partyID string, players []Player) (string, []string) {
 	api.mu.Lock()
 	defer api.mu.Unlock()
 
-	ticket := api.generateTicketLocked()
-	player.Ticket = ticket
-	api.tickets[ticket] = &matchTicket{
-		player:   player,
-		queuedAt: time.Now().UTC(),
-		status:   "searching",
+	if partyID == "" {
+		partyID = "party-" + api.randomSuffix()
 	}
-	api.waiting = append(api.waiting, ticket)
-	return ticket
+
+	ticketIDs := make([]string, 0, len(players))
+	for _, player := range players {
+		ticket := api.generateTicketLocked()
+		player.Ticket = ticket
+		api.tickets[ticket] = &matchTicket{
+			player:   player,
+			queuedAt: time.Now().UTC(),
+			status:   "searching",
+			partyID:  partyID,
+		}
+		ticketIDs = append(ticketIDs, ticket)
+	}
+
+	api.waiting = append(api.waiting, matchGroup{
+		id:        partyID,
+		ticketIDs: ticketIDs,
+		queuedAt:  time.Now().UTC(),
+	})
+
+	return partyID, ticketIDs
 }
 
 func (api *MatchmakingAPI) matchLoop() {
@@ -222,28 +245,40 @@ func (api *MatchmakingAPI) tryCreateMatch() {
 		return
 	}
 
-	shouldStart := len(api.waiting) >= api.matchSize
-	if !shouldStart {
-		oldestTicket := api.waiting[0]
-		oldest := api.tickets[oldestTicket]
-		if oldest != nil && time.Since(oldest.queuedAt) >= api.maxWait {
-			shouldStart = true
-		}
+	totalPlayers := 0
+	for _, group := range api.waiting {
+		totalPlayers += len(group.ticketIDs)
 	}
-
-	if !shouldStart {
+	if totalPlayers < api.matchSize {
 		api.mu.Unlock()
 		return
 	}
 
-	count := api.matchSize
-	if len(api.waiting) < count {
-		count = len(api.waiting)
+	selectedTickets := make([]string, 0, api.matchSize)
+	selectedGroups := 0
+	for _, group := range api.waiting {
+		groupSize := len(group.ticketIDs)
+		if len(selectedTickets) == 0 && groupSize > api.matchSize {
+			selectedGroups++
+			selectedTickets = append(selectedTickets, group.ticketIDs...)
+			break
+		}
+		if len(selectedTickets)+groupSize > api.matchSize {
+			break
+		}
+		selectedGroups++
+		selectedTickets = append(selectedTickets, group.ticketIDs...)
+		if len(selectedTickets) == api.matchSize {
+			break
+		}
 	}
+	if len(selectedTickets) == 0 {
+		api.mu.Unlock()
+		return
+	}
+	api.waiting = api.waiting[selectedGroups:]
 
-	selectedTickets := append([]string(nil), api.waiting[:count]...)
-	api.waiting = api.waiting[count:]
-	players := make([]Player, 0, count)
+	players := make([]Player, 0, len(selectedTickets))
 	for _, ticketID := range selectedTickets {
 		if ticket, ok := api.tickets[ticketID]; ok {
 			players = append(players, ticket.player)
@@ -286,11 +321,22 @@ func (api *MatchmakingAPI) randomSuffix() string {
 	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), api.rng.Intn(100000))
 }
 
-func removeTicket(queue []string, ticketID string) []string {
-	for index, ticket := range queue {
-		if ticket == ticketID {
-			return append(queue[:index], queue[index+1:]...)
+func removeTicket(queue []matchGroup, ticketID string) []matchGroup {
+	for groupIndex, group := range queue {
+		updatedTickets := make([]string, 0, len(group.ticketIDs))
+		for _, id := range group.ticketIDs {
+			if id != ticketID {
+				updatedTickets = append(updatedTickets, id)
+			}
 		}
+		if len(updatedTickets) == len(group.ticketIDs) {
+			continue
+		}
+		if len(updatedTickets) == 0 {
+			return append(queue[:groupIndex], queue[groupIndex+1:]...)
+		}
+		queue[groupIndex].ticketIDs = updatedTickets
+		return queue
 	}
 	return queue
 }

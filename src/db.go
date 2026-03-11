@@ -39,29 +39,22 @@ var initStatements = []string{
 		expiration TIMESTAMPTZ NOT NULL,
 		UNIQUE(player_id, session_token)
 	);`,
-	`CREATE TABLE IF NOT EXISTS equipment (
-		id BIGSERIAL PRIMARY KEY,
-		player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-		equipment_key TEXT NOT NULL,
-		quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
-		faction INTEGER NOT NULL DEFAULT 0
-	);`,
 	`CREATE TABLE IF NOT EXISTS characters (
-		id BIGSERIAL PRIMARY KEY,
+		character_id TEXT PRIMARY KEY,
 		player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-		character_id TEXT NOT NULL,
+		name TEXT NOT NULL,
 		skin_key TEXT NOT NULL,
 		weapon_1 TEXT NOT NULL,
 		weapon_2 TEXT NOT NULL,
 		weapon_3 TEXT NOT NULL,
 		equipment_1 TEXT NOT NULL,
 		equipment_2 TEXT NOT NULL,
+		class_type INTEGER NOT NULL DEFAULT 0,
 		faction INTEGER NOT NULL DEFAULT 0
 	);`,
 }
 
 var resetStatements = []string{
-	`DROP TABLE IF EXISTS equipment CASCADE;`,
 	`DROP TABLE IF EXISTS characters CASCADE;`,
 	`DROP TABLE IF EXISTS session_tokens CASCADE;`,
 	`DROP TABLE IF EXISTS players CASCADE;`,

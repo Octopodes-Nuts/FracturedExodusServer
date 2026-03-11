@@ -9,12 +9,6 @@ SessionToken
     Session Token: string
     Expiration: DateTime
 
-Equipment:
-    Player ID: string
-    Equipment Key: string
-    Quantity: unsigned int
-    Faction: int
-
 Character:
     Player ID: string
     Character ID: string
@@ -24,4 +18,6 @@ Character:
     Weapon 3: string
     Equipment 1: string
     Equipment 2: string
+    Devotion Points: int
+    Class Type: int
     Faction: int

@@ -58,7 +58,7 @@ func main() {
 func startServer() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "8000"
 	}
 
 	api := server.NewServerAPI("FracturedExodusServer")

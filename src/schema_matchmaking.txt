@@ -1,0 +1,40 @@
+
+Game:
+    Game ID: string
+    IP Addr: string
+    Port: string
+    Status: string (starting|ready|ended)
+    Created At: DateTime
+
+Matchmaking Ticket:
+    Ticket ID: string
+    Player ID: string
+    Party ID: string (optional)
+    Status: string (queued|matched|error|cancelled)
+    Game ID: string (nullable)
+    Queued At: DateTime
+
+Party Invite:
+    Invite ID: string
+    Party ID: string
+    From Player ID: string
+    To Player ID: string
+    Status: string (pending|accepted|rejected|expired)
+    Created At: DateTime
+    Expires At: DateTime
+    Seen by Inviter: bool
+    Seen by Invitee: bool
+
+Game Player:
+    Player ID: string
+    Game ID: string
+
+Party:
+    Party ID: string
+    Active Faction: int
+    Primary Player ID: string
+
+PartyPlayer:
+    Party ID: string
+    Player ID: string
+    Active Character ID: string

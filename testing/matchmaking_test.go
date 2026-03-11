@@ -59,7 +59,11 @@ func TestMatchmakingQueueAndStatus(t *testing.T) {
 	if err := json.NewDecoder(queueResponse.Body).Decode(&queuePayload); err != nil {
 		t.Fatalf("decode queue response: %v", err)
 	}
-	ticketID, ok := queuePayload["ticketId"].(string)
+	ids, ok := queuePayload["ticketIds"].([]any)
+	if !ok || len(ids) == 0 {
+		t.Fatalf("expected ticketIds array")
+	}
+	ticketID, ok := ids[0].(string)
 	if !ok || ticketID == "" {
 		t.Fatalf("expected ticketId string")
 	}
@@ -79,7 +83,24 @@ func TestMatchmakingJoinStartsInstance(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	joinRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/join", strings.NewReader(`{"id":1,"username":"pilot"}`))
+	queueRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/queue", strings.NewReader(`{"id":1,"username":"pilot"}`))
+	queueResponse := httptest.NewRecorder()
+	mux.ServeHTTP(queueResponse, queueRequest)
+
+	var queuePayload map[string]any
+	if err := json.NewDecoder(queueResponse.Body).Decode(&queuePayload); err != nil {
+		t.Fatalf("decode queue response: %v", err)
+	}
+	ids, ok := queuePayload["ticketIds"].([]any)
+	if !ok || len(ids) == 0 {
+		t.Fatalf("expected ticketIds array")
+	}
+	ticketID, ok := ids[0].(string)
+	if !ok || ticketID == "" {
+		t.Fatalf("expected ticketId string")
+	}
+
+	joinRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/join", strings.NewReader(`{"ticketId":"`+ticketID+`"}`))
 	joinResponse := httptest.NewRecorder()
 	mux.ServeHTTP(joinResponse, joinRequest)
 
@@ -92,11 +113,7 @@ func TestMatchmakingJoinStartsInstance(t *testing.T) {
 		t.Fatalf("decode join response: %v", err)
 	}
 
-	if payload["status"] != "ready" {
-		t.Fatalf("expected status ready, got %v", payload["status"])
-	}
-
-	if payload["instance"] == nil {
-		t.Fatalf("expected instance in response")
+	if payload["status"] != "searching" {
+		t.Fatalf("expected status searching, got %v", payload["status"])
 	}
 }
