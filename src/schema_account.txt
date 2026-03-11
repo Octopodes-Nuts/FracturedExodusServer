@@ -3,6 +3,8 @@ Player
     ID: string
     Password: string
     Account Name: string
+    Account Level: int
+    Account Experience: int
 
 SessionToken
     Player ID: string
@@ -21,3 +23,11 @@ Character:
     Devotion Points: int
     Class Type: int
     Faction: int
+
+Friend Connection:
+    Connection ID: string
+    Player One ID: string
+    Player Two ID: string
+    Status: string (pending|accepted|blocked|removed)
+    Created At: DateTime
+    Updated At: DateTime

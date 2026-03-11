@@ -30,7 +30,9 @@ var initStatements = []string{
 	`CREATE TABLE IF NOT EXISTS players (
 		id TEXT PRIMARY KEY,
 		password TEXT NOT NULL,
-		account_name TEXT NOT NULL
+		account_name TEXT NOT NULL,
+		account_level INTEGER NOT NULL DEFAULT 1,
+		account_experience INTEGER NOT NULL DEFAULT 0
 	);`,
 	`CREATE TABLE IF NOT EXISTS session_tokens (
 		id BIGSERIAL PRIMARY KEY,
@@ -49,12 +51,24 @@ var initStatements = []string{
 		weapon_3 TEXT NOT NULL,
 		equipment_1 TEXT NOT NULL,
 		equipment_2 TEXT NOT NULL,
+		devotion_points INTEGER NOT NULL DEFAULT 0,
 		class_type INTEGER NOT NULL DEFAULT 0,
 		faction INTEGER NOT NULL DEFAULT 0
+	);`,
+	`CREATE TABLE IF NOT EXISTS friend_connections (
+		connection_id TEXT PRIMARY KEY,
+		player_one_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+		player_two_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+		status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'blocked', 'removed')),
+		created_at TIMESTAMPTZ NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL,
+		CHECK (player_one_id <> player_two_id),
+		UNIQUE(player_one_id, player_two_id)
 	);`,
 }
 
 var resetStatements = []string{
+	`DROP TABLE IF EXISTS friend_connections CASCADE;`,
 	`DROP TABLE IF EXISTS characters CASCADE;`,
 	`DROP TABLE IF EXISTS session_tokens CASCADE;`,
 	`DROP TABLE IF EXISTS players CASCADE;`,

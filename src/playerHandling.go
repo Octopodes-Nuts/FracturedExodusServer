@@ -129,17 +129,186 @@ func createSessionToken() (string, error) {
 }
 
 func (api *PlayerAPI) handleAccountInfo(response http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodGet {
+	fmt.Printf("[DEBUG][accountInfo] request received method=%s path=%s\n", request.Method, request.URL.Path)
+	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][accountInfo] rejected request: invalid method=%s\n", request.Method)
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 
+	type AccountInfoRequest struct {
+		SessionToken string `json:"sessionToken"`
+		PlayerID     string `json:"playerId"`
+	}
+
+	var accountInfoRequest AccountInfoRequest
+	if err := json.NewDecoder(request.Body).Decode(&accountInfoRequest); err != nil {
+		fmt.Printf("[DEBUG][accountInfo] decode failed: %v\n", err)
+		response.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "invalid request body",
+			"error":   err.Error(),
+		})
+		return
+	}
+	fmt.Printf("[DEBUG][accountInfo] decoded request playerId=%s sessionTokenSet=%t\n", accountInfoRequest.PlayerID, accountInfoRequest.SessionToken != "")
+
+	db, err := GetDatabase(context.Background())
+	if err != nil {
+		fmt.Printf("[DEBUG][accountInfo] GetDatabase failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database error",
+			"error":   err.Error(),
+		})
+		return
+	}
+	query := "SELECT 1 FROM session_tokens WHERE session_token = $1 AND player_id = $2 AND expiration > $3"
+	fmt.Printf("[DEBUG][accountInfo] validating session token for playerId=%s\n", accountInfoRequest.PlayerID)
+	rows, err := submitQuery(context.Background(), db.DB, query, accountInfoRequest.SessionToken, accountInfoRequest.PlayerID, time.Now().UTC())
+	if err != nil {
+		fmt.Printf("[DEBUG][accountInfo] session validation query failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database query failed",
+			"error":   err.Error(),
+		})
+		return
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		fmt.Printf("[DEBUG][accountInfo] session validation failed for playerId=%s\n", accountInfoRequest.PlayerID)
+		response.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "invalid session token",
+		})
+		return
+	}
+	fmt.Printf("[DEBUG][accountInfo] session validated for playerId=%s\n", accountInfoRequest.PlayerID)
+	// session token is valid, return account level, experience, and freind connections in response
+	// get information from database
+	query = "SELECT account_level, account_experience FROM players WHERE id = $1"
+	fmt.Printf("[DEBUG][accountInfo] querying account stats for playerId=%s\n", accountInfoRequest.PlayerID)
+	rows, err = submitQuery(context.Background(), db.DB, query, accountInfoRequest.PlayerID)
+	if err != nil {
+		fmt.Printf("[DEBUG][accountInfo] account stats query failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database query failed",
+			"error":   err.Error(),
+		})
+		return
+	}
+	defer rows.Close()
+	var accountLevel int
+	var experience int
+	if rows.Next() {
+		if err := rows.Scan(&accountLevel, &experience); err != nil {
+			fmt.Printf("[DEBUG][accountInfo] failed scanning account stats: %v\n", err)
+			return
+		}
+	} else {
+		fmt.Printf("[DEBUG][accountInfo] player not found for playerId=%s\n", accountInfoRequest.PlayerID)
+		response.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "player not found",
+		})
+		return
+	}
+	fmt.Printf("[DEBUG][accountInfo] account stats loaded level=%d experience=%d\n", accountLevel, experience)
+
+	query = "SELECT player_two_id FROM friend_connections WHERE player_one_id = $1 AND status = 'accepted' UNION SELECT player_one_id FROM friend_connections WHERE player_two_id = $1 AND status = 'accepted'"
+	fmt.Printf("[DEBUG][accountInfo] querying accepted friends for playerId=%s\n", accountInfoRequest.PlayerID)
+	rows, err = submitQuery(context.Background(), db.DB, query, accountInfoRequest.PlayerID)
+	if err != nil {
+		fmt.Printf("[DEBUG][accountInfo] accepted friends query failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database query failed",
+			"error":   err.Error(),
+		})
+		return
+	}
+	defer rows.Close()
+	friends := []string{}
+	for rows.Next() {
+		var friendID string
+		if err := rows.Scan(&friendID); err != nil {
+			fmt.Printf("[DEBUG][accountInfo] failed scanning accepted friend row: %v\n", err)
+			return
+		}
+		friends = append(friends, friendID)
+	}
+	fmt.Printf("[DEBUG][accountInfo] accepted friends count=%d\n", len(friends))
+
+	friendRequests := []string{}
+	query = "SELECT player_one_id FROM friend_connections WHERE player_two_id = $1 AND status = 'pending'"
+	fmt.Printf("[DEBUG][accountInfo] querying inbound friend requests for playerId=%s\n", accountInfoRequest.PlayerID)
+	rows, err = submitQuery(context.Background(), db.DB, query, accountInfoRequest.PlayerID)
+	if err != nil {
+		fmt.Printf("[DEBUG][accountInfo] inbound friend requests query failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database query failed",
+			"error":   err.Error(),
+		})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var friendRequestID string
+		if err := rows.Scan(&friendRequestID); err != nil {
+			fmt.Printf("[DEBUG][accountInfo] failed scanning inbound friend request row: %v\n", err)
+			return
+		}
+		friendRequests = append(friendRequests, friendRequestID)
+	}
+	fmt.Printf("[DEBUG][accountInfo] inbound friend requests count=%d\n", len(friendRequests))
+
+	pendingFriendRequests := []string{}
+	query = "SELECT player_two_id FROM friend_connections WHERE player_one_id = $1 AND status = 'pending'"
+	fmt.Printf("[DEBUG][accountInfo] querying outbound friend requests for playerId=%s\n", accountInfoRequest.PlayerID)
+	rows, err = submitQuery(context.Background(), db.DB, query, accountInfoRequest.PlayerID)
+	if err != nil {
+		fmt.Printf("[DEBUG][accountInfo] outbound friend requests query failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database query failed",
+			"error":   err.Error(),
+		})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pendingFriendRequestID string
+		if err := rows.Scan(&pendingFriendRequestID); err != nil {
+			fmt.Printf("[DEBUG][accountInfo] failed scanning outbound friend request row: %v\n", err)
+			return
+		}
+		pendingFriendRequests = append(pendingFriendRequests, pendingFriendRequestID)
+	}
+	fmt.Printf("[DEBUG][accountInfo] outbound friend requests count=%d\n", len(pendingFriendRequests))
+	fmt.Printf("[DEBUG][accountInfo] request succeeded for playerId=%s\n", accountInfoRequest.PlayerID)
+
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{
-		"status":       "ok",
-		"message":      "account info retrieved",
-		"buildVersion": api.buildVersion,
+		"status":                "ok",
+		"accountLevel":          accountLevel,
+		"experience":            experience,
+		"friends":               friends,
+		"friendRequests":        friendRequests,
+		"pendingFriendRequests": pendingFriendRequests,
 	})
 }
 
