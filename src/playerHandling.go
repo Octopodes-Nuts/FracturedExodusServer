@@ -349,26 +349,6 @@ func (api *PlayerAPI) handleGetCharacter(response http.ResponseWriter, request *
 	})
 }
 
-func validateSessionToken(sessionToken string) error {
-	db, err := GetDatabase(context.Background())
-	if err != nil {
-		return err
-	}
-
-	query := "SELECT 1 FROM session_tokens WHERE session_token = $1 AND expiration > $2"
-	rows, err := submitQuery(context.Background(), db.DB, query, sessionToken, time.Now().UTC())
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	if rows.Next() {
-		return nil
-	}
-
-	return fmt.Errorf("invalid session token")
-}
-
 func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		response.WriteHeader(http.StatusMethodNotAllowed)
@@ -537,6 +517,7 @@ func (api *PlayerAPI) handleUpdateCharacter(response http.ResponseWriter, reques
 
 	var updateRequest UpdateCharacterRequest
 	if err := json.NewDecoder(request.Body).Decode(&updateRequest); err != nil {
+		fmt.Printf("Error decoding request body: %v\n", err)
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -547,6 +528,7 @@ func (api *PlayerAPI) handleUpdateCharacter(response http.ResponseWriter, reques
 	}
 
 	if updateRequest.SessionToken == "" || updateRequest.CharacterID == "" {
+		fmt.Printf("Missing sessionToken or characterId\n")
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -555,7 +537,10 @@ func (api *PlayerAPI) handleUpdateCharacter(response http.ResponseWriter, reques
 		return
 	}
 
-	if updateRequest.Name == "" || updateRequest.SkinKey == "" || updateRequest.Weapon1 == "" || updateRequest.Weapon2 == "" || updateRequest.Weapon3 == "" || updateRequest.Equipment1 == "" || updateRequest.Equipment2 == "" {
+	if updateRequest.Name == "" {
+		fmt.Printf("Missing character fields\n")
+		//print object
+		fmt.Printf("UpdateCharacterRequest: %+v\n", updateRequest)
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -677,30 +662,6 @@ func (api *PlayerAPI) handleDeleteCharacter(response http.ResponseWriter, reques
 		"characterId": deleteRequest.CharacterID,
 		"message":     "character deleted",
 	})
-}
-
-func getPlayerIDFromSession(sessionToken string) (string, error) {
-	db, err := GetDatabase(context.Background())
-	if err != nil {
-		return "", err
-	}
-
-	query := "SELECT player_id FROM session_tokens WHERE session_token = $1 AND expiration > $2"
-	rows, err := submitQuery(context.Background(), db.DB, query, sessionToken, time.Now().UTC())
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-
-	var playerID string
-	if rows.Next() {
-		if err := rows.Scan(&playerID); err != nil {
-			return "", err
-		}
-		return playerID, nil
-	}
-
-	return "", fmt.Errorf("invalid session token")
 }
 
 func handleCreateAccount(response http.ResponseWriter, request *http.Request) {

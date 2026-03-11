@@ -17,22 +17,29 @@ func main() {
 	runServer := flag.Bool("run", false, "run the HTTP server")
 	initDB := flag.Bool("init_db", false, "initialize the database")
 	resetDB := flag.Bool("reset_db", false, "reset the database")
+	initMMDB := flag.Bool("init_mm_db", false, "initialize the matchmaking database")
+	resetMMDB := flag.Bool("reset_mm_db", false, "reset the matchmaking database")
 	flag.Parse()
 
-	if !*runServer && !*initDB && !*resetDB {
+	if !*runServer && !*initDB && !*resetDB && !*initMMDB && !*resetMMDB {
 		flag.Usage()
 		return
 	}
 
 	ctx := context.Background()
-	if *initDB || *resetDB {
+	if *initDB || *resetDB || *initMMDB || *resetMMDB {
 		config := server.DefaultDBConfig()
 		database, err := server.OpenDB(ctx, config)
 		if err != nil {
 			log.Fatalf("database connection error: %v", err)
 		}
+		mmDB, err := server.GetMMDB(ctx)
+		if err != nil {
+			log.Fatalf("matchmaking database connection error: %v", err)
+		}
 		defer func() {
 			_ = database.Close()
+			_ = mmDB.DB.Close()
 		}()
 
 		if *resetDB {
@@ -47,6 +54,20 @@ func main() {
 				log.Fatalf("init db error: %v", err)
 			}
 			log.Printf("database initialization complete")
+		}
+
+		if *initMMDB {
+			if err := server.InitMMDB(ctx, mmDB); err != nil {
+				log.Fatalf("init matchmaking db error: %v", err)
+			}
+			log.Printf("matchmaking database initialization complete")
+		}
+
+		if *resetMMDB {
+			if err := server.ResetMMDB(ctx, mmDB); err != nil {
+				log.Fatalf("reset matchmaking db error: %v", err)
+			}
+			log.Printf("matchmaking database reset complete")
 		}
 	}
 

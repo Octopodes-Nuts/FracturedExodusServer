@@ -74,10 +74,35 @@ func DefaultMMDBConfig() DBConfig {
 	}
 }
 
+// MMDB singleton
+var mmDB *Database
+
+func GetMMDB(ctx context.Context) (*Database, error) {
+	if mmDB != nil {
+		return mmDB, nil
+	} else {
+		cfg := DefaultMMDBConfig()
+		db, err := OpenDB(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		mmDB = &Database{DB: db}
+	}
+	return mmDB, nil
+}
+
 func InitMMDB(ctx context.Context, database *Database) error {
-	return execStatements(ctx, database.DB, initMMDBStatements)
+	db, err := GetMMDB(ctx)
+	if err != nil {
+		return err
+	}
+	return execStatements(ctx, db.DB, initMMDBStatements)
 }
 
 func ResetMMDB(ctx context.Context, database *Database) error {
-	return execStatements(ctx, database.DB, resetMMDBStatements)
+	db, err := GetMMDB(ctx)
+	if err != nil {
+		return err
+	}
+	return execStatements(ctx, db.DB, resetMMDBStatements)
 }
