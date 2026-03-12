@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -110,6 +112,8 @@ func (manager *GameServerManager) StartGameInstance(ctx context.Context, players
 	manager.instances[instance.ID] = instance
 	manager.mu.Unlock()
 
+	manager.streamContainerLogs(containerName)
+
 	return instance, nil
 }
 
@@ -194,6 +198,56 @@ func (manager *GameServerManager) StopAll(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (manager *GameServerManager) streamContainerLogs(containerName string) {
+	go func() {
+		cmd := exec.Command("docker", "logs", "-f", containerName)
+
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			fmt.Printf("[container:%s][logs] failed to create stdout pipe: %v\n", containerName, err)
+			return
+		}
+
+		stderrPipe, err := cmd.StderrPipe()
+		if err != nil {
+			fmt.Printf("[container:%s][logs] failed to create stderr pipe: %v\n", containerName, err)
+			return
+		}
+
+		if err := cmd.Start(); err != nil {
+			fmt.Printf("[container:%s][logs] failed to start docker logs: %v\n", containerName, err)
+			return
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			pipeContainerLogStream(containerName, "stdout", stdoutPipe)
+		}()
+		go func() {
+			defer wg.Done()
+			pipeContainerLogStream(containerName, "stderr", stderrPipe)
+		}()
+
+		waitErr := cmd.Wait()
+		wg.Wait()
+		if waitErr != nil {
+			fmt.Printf("[container:%s][logs] docker logs exited: %v\n", containerName, waitErr)
+		}
+	}()
+}
+
+func pipeContainerLogStream(containerName string, streamName string, reader io.Reader) {
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		fmt.Printf("[container:%s][%s] %s\n", containerName, streamName, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("[container:%s][%s] scanner error: %v\n", containerName, streamName, err)
+	}
 }
 
 func generateJoinKey() (string, error) {

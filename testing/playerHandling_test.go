@@ -54,13 +54,13 @@ func TestPlayerAccountInfo(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodGet, "/player/accountInfo", nil)
+	request := httptest.NewRequest(http.MethodPost, "/player/accountInfo", nil)
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
 
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, response.Code)
 	}
 
 	var payload map[string]any
@@ -68,8 +68,12 @@ func TestPlayerAccountInfo(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if payload["buildVersion"] != "dev-build" {
-		t.Fatalf("expected buildVersion dev-build, got %v", payload["buildVersion"])
+	if payload["status"] != "error" {
+		t.Fatalf("expected error status, got %v", payload["status"])
+	}
+
+	if payload["message"] != "invalid request body" {
+		t.Fatalf("expected invalid request body message, got %v", payload["message"])
 	}
 }
 
@@ -78,7 +82,7 @@ func TestPlayerAccountInfoMethodNotAllowed(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/player/accountInfo", nil)
+	request := httptest.NewRequest(http.MethodGet, "/player/accountInfo", nil)
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
