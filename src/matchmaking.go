@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	defaultMatchSize = 12
+	defaultMatchSize      = 12
+	defaultMatchStartWait = 30 * time.Second
 )
 
 type matchTicket struct {
@@ -65,6 +66,7 @@ type MatchmakingAPI struct {
 	region              string
 	manager             MatchmakingManager
 	matchSize           int
+	matchStartWait      time.Duration
 	mu                  sync.Mutex
 	waiting             []matchGroup
 	tickets             map[string]*matchTicket
@@ -78,6 +80,7 @@ func NewMatchmakingAPI(region string, manager MatchmakingManager) *MatchmakingAP
 		region:              region,
 		manager:             manager,
 		matchSize:           defaultMatchSize,
+		matchStartWait:      defaultMatchStartWait,
 		waiting:             []matchGroup{},
 		tickets:             make(map[string]*matchTicket),
 		startedAt:           time.Now().UTC(),
@@ -111,6 +114,15 @@ func (api *MatchmakingAPI) SetQueueContextResolverForTesting(resolver func(ctx c
 	}
 	api.mu.Lock()
 	api.resolveQueueContext = resolver
+	api.mu.Unlock()
+}
+
+func (api *MatchmakingAPI) SetMatchStartWaitForTesting(wait time.Duration) {
+	if wait < 0 {
+		return
+	}
+	api.mu.Lock()
+	api.matchStartWait = wait
 	api.mu.Unlock()
 }
 
@@ -520,6 +532,7 @@ func (api *MatchmakingAPI) tryCreateMatch() {
 
 	api.mu.Lock()
 	targetMatchSize := api.matchSize
+	matchStartWait := api.matchStartWait
 	api.mu.Unlock()
 
 	groups, err := loadQueueGroupsFromDB(ctx, mmDB)
@@ -531,6 +544,19 @@ func (api *MatchmakingAPI) tryCreateMatch() {
 		return
 	}
 
+	if len(selectedRows) < targetMatchSize {
+		oldestQueuedAt := selectedRows[0].QueuedAt
+		for _, row := range selectedRows[1:] {
+			if row.QueuedAt.Before(oldestQueuedAt) {
+				oldestQueuedAt = row.QueuedAt
+			}
+		}
+
+		if time.Since(oldestQueuedAt) < matchStartWait {
+			return
+		}
+	}
+
 	selectedTicketIDs := make([]string, 0, len(selectedRows))
 	for _, row := range selectedRows {
 		selectedTicketIDs = append(selectedTicketIDs, row.TicketID)
@@ -539,6 +565,15 @@ func (api *MatchmakingAPI) tryCreateMatch() {
 	claimed, claimErr := claimTicketsForMatch(ctx, mmDB, selectedTicketIDs)
 	if claimErr != nil || !claimed {
 		return
+	}
+
+	api.startClaimedMatch(ctx, mmDB, selectedRows)
+}
+
+func (api *MatchmakingAPI) startClaimedMatch(ctx context.Context, mmDB *Database, selectedRows []queueTicketRow) {
+	selectedTicketIDs := make([]string, 0, len(selectedRows))
+	for _, row := range selectedRows {
+		selectedTicketIDs = append(selectedTicketIDs, row.TicketID)
 	}
 
 	players, loadErr := loadPlayersForRows(ctx, selectedRows)

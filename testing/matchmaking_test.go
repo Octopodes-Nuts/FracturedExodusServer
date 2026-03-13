@@ -18,12 +18,14 @@ type fakeMatchmakingManager struct {
 	mu        sync.Mutex
 	instances []server.GameInstance
 	calls     int
+	lastSizes []int
 }
 
 func (manager *fakeMatchmakingManager) StartGameInstance(ctx context.Context, players []server.Player, requestedPort string) (server.GameInstance, error) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	manager.calls++
+	manager.lastSizes = append(manager.lastSizes, len(players))
 	instance := server.GameInstance{
 		ID:       "instance-1",
 		Host:     "127.0.0.1",
@@ -41,6 +43,21 @@ func (manager *fakeMatchmakingManager) ListInstances() []server.GameInstance {
 	instances := make([]server.GameInstance, len(manager.instances))
 	copy(instances, manager.instances)
 	return instances
+}
+
+func (manager *fakeMatchmakingManager) CallCount() int {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	return manager.calls
+}
+
+func (manager *fakeMatchmakingManager) LastPlayerCount() int {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if len(manager.lastSizes) == 0 {
+		return 0
+	}
+	return manager.lastSizes[len(manager.lastSizes)-1]
 }
 
 func TestMatchmakingQueueAndStatus(t *testing.T) {
@@ -212,5 +229,86 @@ func TestMatchmakingStatusNoTicketReturnsOwnTicketWhenQueued(t *testing.T) {
 	ticketID, ok := statusPayload["ticketId"].(string)
 	if !ok || ticketID == "" {
 		t.Fatalf("expected non-empty ticketId, got %v", statusPayload["ticketId"])
+	}
+}
+
+func TestMatchmakingQueuesSecondsApartJoinSameMatch(t *testing.T) {
+	mmDB, err := server.GetMMDB(context.Background())
+	if err != nil {
+		t.Fatalf("get mm db: %v", err)
+	}
+	if err := server.ResetMMDB(context.Background(), mmDB); err != nil {
+		t.Fatalf("reset mm db: %v", err)
+	}
+	if err := server.InitMMDB(context.Background(), mmDB); err != nil {
+		t.Fatalf("init mm db: %v", err)
+	}
+
+	manager := &fakeMatchmakingManager{}
+	api := server.NewMatchmakingAPI("NA", manager)
+	api.SetMatchSize(2)
+	api.SetMatchStartWaitForTesting(30 * time.Second)
+
+	uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	playerOne := "player-one-" + uniqueSuffix
+	playerTwo := "player-two-" + uniqueSuffix
+
+	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (server.QueueContext, error) {
+		switch sessionToken {
+		case "session-1":
+			return server.QueueContext{
+				RequesterPlayerID: playerOne,
+				Members: []server.QueueMember{
+					{PlayerID: playerOne, Username: "pilot-one"},
+				},
+			}, nil
+		case "session-2":
+			return server.QueueContext{
+				RequesterPlayerID: playerTwo,
+				Members: []server.QueueMember{
+					{PlayerID: playerTwo, Username: "pilot-two"},
+				},
+			}, nil
+		default:
+			return server.QueueContext{}, fmt.Errorf("invalid session token")
+		}
+	})
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	queueOne := httptest.NewRequest(http.MethodPost, "/matchmaking/queue", strings.NewReader(`{"sessionToken":"session-1"}`))
+	queueOneResponse := httptest.NewRecorder()
+	mux.ServeHTTP(queueOneResponse, queueOne)
+	if queueOneResponse.Code != http.StatusAccepted {
+		t.Fatalf("expected first queue status %d, got %d", http.StatusAccepted, queueOneResponse.Code)
+	}
+
+	time.Sleep(1200 * time.Millisecond)
+	if manager.CallCount() != 0 {
+		t.Fatalf("expected no match start before threshold, got %d starts", manager.CallCount())
+	}
+
+	queueTwo := httptest.NewRequest(http.MethodPost, "/matchmaking/queue", strings.NewReader(`{"sessionToken":"session-2"}`))
+	queueTwoResponse := httptest.NewRecorder()
+	mux.ServeHTTP(queueTwoResponse, queueTwo)
+	if queueTwoResponse.Code != http.StatusAccepted {
+		t.Fatalf("expected second queue status %d, got %d", http.StatusAccepted, queueTwoResponse.Code)
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if manager.CallCount() > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if manager.CallCount() != 1 {
+		t.Fatalf("expected exactly one match start, got %d", manager.CallCount())
+	}
+
+	if manager.LastPlayerCount() != 2 {
+		t.Fatalf("expected combined match size 2, got %d", manager.LastPlayerCount())
 	}
 }

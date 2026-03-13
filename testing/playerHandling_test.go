@@ -130,3 +130,81 @@ func TestPlayerEquipmentAndCharactersMethodNotAllowed(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, response.Code)
 	}
 }
+
+func TestFriendRequestMethodNotAllowed(t *testing.T) {
+	api := server.NewPlayerAPI("test")
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodGet, "/player/friendRequest", nil)
+	response := httptest.NewRecorder()
+
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, response.Code)
+	}
+}
+
+func TestFriendRequestInvalidBody(t *testing.T) {
+	api := server.NewPlayerAPI("test")
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodPost, "/player/friendRequest", strings.NewReader("not-json"))
+	response := httptest.NewRecorder()
+
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, response.Code)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if payload["status"] != "error" {
+		t.Fatalf("expected error status, got %v", payload["status"])
+	}
+}
+
+func TestAcceptRejectFriendRequestMethodNotAllowed(t *testing.T) {
+	api := server.NewPlayerAPI("test")
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodGet, "/player/acceptRejectFriendRequest", nil)
+	response := httptest.NewRecorder()
+
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, response.Code)
+	}
+}
+
+func TestAcceptRejectFriendRequestMissingFields(t *testing.T) {
+	api := server.NewPlayerAPI("test")
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodPost, "/player/acceptRejectFriendRequest", strings.NewReader(`{"accept":true}`))
+	response := httptest.NewRecorder()
+
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, response.Code)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if payload["status"] != "error" {
+		t.Fatalf("expected error status, got %v", payload["status"])
+	}
+}
