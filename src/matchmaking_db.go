@@ -56,9 +56,18 @@ var initMMDBStatements = []string{
 		game_id TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
 		PRIMARY KEY (player_id, game_id)
 	);`,
+	`CREATE TABLE IF NOT EXISTS server_tokens (
+		token_id TEXT PRIMARY KEY,
+		server_name TEXT NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		last_used_at TIMESTAMPTZ,
+		revoked BOOLEAN NOT NULL DEFAULT FALSE
+	);`,
 }
 
 var resetMMDBStatements = []string{
+	`DROP TABLE IF EXISTS server_tokens CASCADE;`,
 	`DROP TABLE IF EXISTS game_players CASCADE;`,
 	`DROP TABLE IF EXISTS party_players CASCADE;`,
 	`DROP TABLE IF EXISTS parties CASCADE;`,

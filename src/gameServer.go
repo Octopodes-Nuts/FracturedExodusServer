@@ -131,12 +131,29 @@ func (manager *GameServerManager) buildImage(ctx context.Context) error {
 
 func (manager *GameServerManager) runContainer(ctx context.Context, containerName string, requestedPort string) (string, error) {
 	containerPort := fmt.Sprintf("%s/%s", manager.config.GamePort, manager.config.Protocol)
+	registrationKey := os.Getenv("MM_SERVER_REGISTRATION_KEY")
+
+	envArgs := []string{
+		"-e", fmt.Sprintf("MM_SERVER_NAME=%s", containerName),
+	}
+	if registrationKey != "" {
+		envArgs = append(envArgs, "-e", fmt.Sprintf("MM_SERVER_REGISTRATION_KEY=%s", registrationKey))
+	} else {
+		fmt.Printf("[container:%s][startup] MM_SERVER_REGISTRATION_KEY is not set; server registration may fail\n", containerName)
+	}
+
 	var cmd *exec.Cmd
 	if requestedPort != "" {
 		portMapping := fmt.Sprintf("%s:%s", requestedPort, containerPort)
-		cmd = exec.CommandContext(ctx, "docker", "run", "-d", "--rm", "-p", portMapping, "--name", containerName, manager.config.ImageName)
+		args := []string{"run", "-d", "--rm", "-p", portMapping, "--name", containerName}
+		args = append(args, envArgs...)
+		args = append(args, manager.config.ImageName)
+		cmd = exec.CommandContext(ctx, "docker", args...)
 	} else {
-		cmd = exec.CommandContext(ctx, "docker", "run", "-d", "--rm", "-P", "--name", containerName, manager.config.ImageName)
+		args := []string{"run", "-d", "--rm", "-P", "--name", containerName}
+		args = append(args, envArgs...)
+		args = append(args, manager.config.ImageName)
+		cmd = exec.CommandContext(ctx, "docker", args...)
 	}
 	output, err := cmd.Output()
 	if err != nil {

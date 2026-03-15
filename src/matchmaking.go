@@ -2,11 +2,15 @@ package server
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -95,8 +99,10 @@ func NewMatchmakingAPI(region string, manager MatchmakingManager) *MatchmakingAP
 func (api *MatchmakingAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/matchmaking/queue", api.handleQueue)
 	mux.HandleFunc("/matchmaking/join", api.handleJoin)
+	mux.HandleFunc("/matchmaking/register-server", api.handleRegisterServer)
 	mux.HandleFunc("/matchmaking/joined", api.handleJoined)
 	mux.HandleFunc("/matchmaking/left", api.handleLeft)
+	mux.HandleFunc("/matchmaking/match-ended", api.handleMatchEnded)
 	mux.HandleFunc("/matchmaking/heartbeat", api.handleHeartbeat)
 	mux.HandleFunc("/matchmaking/status", api.handleStatus)
 	mux.HandleFunc("/matchmaking/cancel", api.handleCancel)
@@ -245,6 +251,88 @@ func (api *MatchmakingAPI) handleJoin(response http.ResponseWriter, request *htt
 		"partyId":  ticketPayload.PartyID,
 		"instance": ticketPayload.Instance,
 		"error":    ticketPayload.Error,
+	})
+}
+
+func (api *MatchmakingAPI) handleRegisterServer(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][registerServer] request received method=%s path=%s\n", request.Method, request.URL.Path)
+	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][registerServer] rejected request: invalid method=%s\n", request.Method)
+		response.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var registerRequest struct {
+		ServerName      string `json:"serverName"`
+		RegistrationKey string `json:"registrationKey"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&registerRequest); err != nil {
+		fmt.Printf("[DEBUG][registerServer] decode failed: %v\n", err)
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	if registerRequest.ServerName == "" || registerRequest.RegistrationKey == "" {
+		fmt.Printf("[DEBUG][registerServer] rejected request: missing fields serverName=%q registrationKeySet=%t\n", registerRequest.ServerName, registerRequest.RegistrationKey != "")
+		response.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "serverName and registrationKey are required",
+		})
+		return
+	}
+
+	expectedRegistrationKey := os.Getenv("MM_SERVER_REGISTRATION_KEY")
+	if expectedRegistrationKey == "" {
+		fmt.Printf("[DEBUG][registerServer] rejected request: MM_SERVER_REGISTRATION_KEY is not configured\n")
+		response.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "server registration is disabled",
+		})
+		return
+	}
+
+	if registerRequest.RegistrationKey != expectedRegistrationKey {
+		fmt.Printf("[DEBUG][registerServer] rejected request: invalid registration key for serverName=%s\n", registerRequest.ServerName)
+		response.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "invalid registration key",
+		})
+		return
+	}
+
+	mmDB, err := GetMMDB(request.Context())
+	if err != nil {
+		fmt.Printf("[DEBUG][registerServer] GetMMDB failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	serverToken, tokenHash, err := generateServerToken()
+	if err != nil {
+		fmt.Printf("[DEBUG][registerServer] generateServerToken failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	tokenID := "srv-token-" + uuid.NewString()
+	if err := persistServerToken(request.Context(), mmDB, tokenID, registerRequest.ServerName, tokenHash); err != nil {
+		fmt.Printf("[DEBUG][registerServer] persistServerToken failed serverName=%s err=%v\n", registerRequest.ServerName, err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("[DEBUG][registerServer] server token registered tokenId=%s serverName=%s\n", tokenID, registerRequest.ServerName)
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(response).Encode(map[string]any{
+		"status":      "ok",
+		"tokenId":     tokenID,
+		"serverName":  registerRequest.ServerName,
+		"serverToken": serverToken,
+		"issuedAt":    time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -606,6 +694,90 @@ func (api *MatchmakingAPI) handleLeft(response http.ResponseWriter, request *htt
 		"status":         "not_queued",
 		"partyId":        queueContext.PartyID,
 		"updatedTickets": updated,
+	})
+}
+
+func (api *MatchmakingAPI) handleMatchEnded(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][matchEnded] request received method=%s path=%s\n", request.Method, request.URL.Path)
+	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][matchEnded] rejected request: invalid method=%s\n", request.Method)
+		response.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var matchEndedRequest struct {
+		SessionToken string `json:"sessionToken"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&matchEndedRequest); err != nil {
+		fmt.Printf("[DEBUG][matchEnded] decode failed: %v\n", err)
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if matchEndedRequest.SessionToken == "" {
+		fmt.Printf("[DEBUG][matchEnded] rejected request: missing sessionToken\n")
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	api.mu.Lock()
+	resolver := api.resolveQueueContext
+	api.mu.Unlock()
+	queueContext, err := resolver(request.Context(), matchEndedRequest.SessionToken)
+	if err != nil {
+		if errors.Is(err, errInvalidSessionToken) {
+			fmt.Printf("[DEBUG][matchEnded] session validation failed: invalid session token\n")
+			response.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		fmt.Printf("[DEBUG][matchEnded] queue context resolver failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	memberIDs := make([]string, 0, len(queueContext.Members))
+	for _, member := range queueContext.Members {
+		memberIDs = append(memberIDs, member.PlayerID)
+	}
+	fmt.Printf("[DEBUG][matchEnded] resolved members partyId=%s members=%d\n", queueContext.PartyID, len(memberIDs))
+
+	mmDB, err := GetMMDB(request.Context())
+	if err != nil {
+		fmt.Printf("[DEBUG][matchEnded] GetMMDB failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	updatedTickets, updatedGames, err := markPlayersMatchEnded(request.Context(), mmDB, memberIDs)
+	if err != nil {
+		fmt.Printf("[DEBUG][matchEnded] markPlayersMatchEnded failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	api.mu.Lock()
+	for _, ticket := range api.tickets {
+		if ticket == nil {
+			continue
+		}
+		for _, playerID := range memberIDs {
+			if ticket.playerID == playerID {
+				ticket.status = "left"
+				ticket.instance = nil
+				ticket.error = ""
+				break
+			}
+		}
+	}
+	api.mu.Unlock()
+
+	fmt.Printf("[DEBUG][matchEnded] request succeeded partyId=%s updatedTickets=%d updatedGames=%d\n", queueContext.PartyID, updatedTickets, updatedGames)
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(response).Encode(map[string]any{
+		"status":         "not_queued",
+		"partyId":        queueContext.PartyID,
+		"updatedTickets": updatedTickets,
+		"updatedGames":   updatedGames,
 	})
 }
 
@@ -1533,6 +1705,24 @@ func deleteSeenInviteByID(ctx context.Context, mmDB *Database, inviteID string) 
 	return removed, nil
 }
 
+func generateServerToken() (string, string, error) {
+	tokenBytes := make([]byte, 32)
+	if _, err := cryptorand.Read(tokenBytes); err != nil {
+		return "", "", err
+	}
+
+	serverToken := hex.EncodeToString(tokenBytes)
+	hash := sha256.Sum256([]byte(serverToken))
+	return serverToken, hex.EncodeToString(hash[:]), nil
+}
+
+func persistServerToken(ctx context.Context, mmDB *Database, tokenID string, serverName string, tokenHash string) error {
+	query := `INSERT INTO server_tokens (token_id, server_name, token_hash, created_at, revoked)
+		VALUES ($1, $2, $3, $4, FALSE)`
+	_, err := submitExec(ctx, mmDB.DB, query, tokenID, serverName, tokenHash, time.Now().UTC())
+	return err
+}
+
 func (api *MatchmakingAPI) enqueueGroup(ctx context.Context, partyID string, members []QueueMember) (string, []string, map[string]string, error) {
 	if len(members) == 0 {
 		return "", nil, nil, fmt.Errorf("no players found for queue")
@@ -2290,6 +2480,71 @@ func touchPlayersHeartbeat(ctx context.Context, mmDB *Database, playerIDs []stri
 	}
 
 	return result.RowsAffected()
+}
+
+func markPlayersMatchEnded(ctx context.Context, mmDB *Database, playerIDs []string) (int64, int64, error) {
+	if mmDB == nil || mmDB.DB == nil || len(playerIDs) == 0 {
+		return 0, 0, nil
+	}
+
+	now := time.Now().UTC()
+
+	updateTicketsQuery := fmt.Sprintf(`WITH latest_active_tickets AS (
+		SELECT DISTINCT ON (player_id) ticket_id, game_id
+		FROM matchmaking_tickets
+		WHERE player_id IN (%s)
+			AND status IN ('matched', 'in_match')
+		ORDER BY player_id, queued_at DESC
+	)
+	UPDATE matchmaking_tickets mt
+	SET status = 'left', game_id = NULL, left_at = $1, last_heartbeat_at = $1
+	WHERE mt.ticket_id IN (SELECT ticket_id FROM latest_active_tickets)`, buildPlaceholderList(2, len(playerIDs)))
+
+	args := make([]any, 0, 1+len(playerIDs))
+	args = append(args, now)
+	for _, playerID := range playerIDs {
+		args = append(args, playerID)
+	}
+
+	ticketResult, err := submitExec(ctx, mmDB.DB, updateTicketsQuery, args...)
+	if err != nil {
+		return 0, 0, err
+	}
+	updatedTickets, err := ticketResult.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	updateGamesQuery := fmt.Sprintf(`WITH latest_active_tickets AS (
+		SELECT DISTINCT ON (player_id) game_id
+		FROM matchmaking_tickets
+		WHERE player_id IN (%s)
+			AND status IN ('matched', 'in_match')
+			AND game_id IS NOT NULL
+		ORDER BY player_id, queued_at DESC
+	), distinct_games AS (
+		SELECT DISTINCT game_id FROM latest_active_tickets
+	)
+	UPDATE games g
+	SET status = 'ended'
+	WHERE g.game_id IN (SELECT game_id FROM distinct_games)
+		AND g.status <> 'ended'`, buildPlaceholderList(1, len(playerIDs)))
+
+	gameArgs := make([]any, 0, len(playerIDs))
+	for _, playerID := range playerIDs {
+		gameArgs = append(gameArgs, playerID)
+	}
+
+	gameResult, err := submitExec(ctx, mmDB.DB, updateGamesQuery, gameArgs...)
+	if err != nil {
+		return 0, 0, err
+	}
+	updatedGames, err := gameResult.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return updatedTickets, updatedGames, nil
 }
 
 func buildPlaceholderList(start int, count int) string {
