@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -190,14 +191,68 @@ func (manager *GameServerManager) StopAll(ctx context.Context) error {
 	}
 	manager.mu.Unlock()
 
+	containerNameSet := make(map[string]struct{}, len(instances))
 	for _, instance := range instances {
-		cmd := exec.CommandContext(ctx, "docker", "stop", instance.ContainerName)
-		if err := cmd.Run(); err != nil {
-			return err
+		if instance.ContainerName != "" {
+			containerNameSet[instance.ContainerName] = struct{}{}
 		}
 	}
 
+	discoveredNames, err := manager.listManagedContainerNames(ctx)
+	if err != nil {
+		return err
+	}
+	for _, name := range discoveredNames {
+		containerNameSet[name] = struct{}{}
+	}
+
+	containerNames := make([]string, 0, len(containerNameSet))
+	for name := range containerNameSet {
+		containerNames = append(containerNames, name)
+	}
+	slices.Sort(containerNames)
+
+	var stopErrors []error
+	for _, name := range containerNames {
+		cmd := exec.CommandContext(ctx, "docker", "stop", name)
+		output, stopErr := cmd.CombinedOutput()
+		if stopErr != nil {
+			if strings.Contains(strings.ToLower(string(output)), "no such container") {
+				continue
+			}
+			stopErrors = append(stopErrors, fmt.Errorf("stop %s: %w: %s", name, stopErr, strings.TrimSpace(string(output))))
+		}
+	}
+
+	manager.mu.Lock()
+	manager.instances = make(map[string]GameInstance)
+	manager.mu.Unlock()
+
+	if len(stopErrors) > 0 {
+		return errors.Join(stopErrors...)
+	}
+
 	return nil
+}
+
+func (manager *GameServerManager) listManagedContainerNames(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "ps", "--filter", "name=game-instance-", "--format", "{{.Names}}")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	names := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		names = append(names, trimmed)
+	}
+
+	return names, nil
 }
 
 func (manager *GameServerManager) streamContainerLogs(containerName string) {
