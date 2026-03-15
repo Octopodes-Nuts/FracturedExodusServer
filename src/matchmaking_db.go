@@ -26,6 +26,9 @@ var initMMDBStatements = []string{
 		game_id TEXT REFERENCES games(game_id) ON DELETE SET NULL,
 		queued_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);`,
+	`ALTER TABLE matchmaking_tickets ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ;`,
+	`ALTER TABLE matchmaking_tickets ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;`,
+	`ALTER TABLE matchmaking_tickets ADD COLUMN IF NOT EXISTS left_at TIMESTAMPTZ;`,
 	`CREATE TABLE IF NOT EXISTS party_invites (
 		invite_id TEXT PRIMARY KEY,
 		party_id TEXT NOT NULL,

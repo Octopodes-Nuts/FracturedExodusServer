@@ -312,3 +312,129 @@ func TestMatchmakingQueuesSecondsApartJoinSameMatch(t *testing.T) {
 		t.Fatalf("expected combined match size 2, got %d", manager.LastPlayerCount())
 	}
 }
+
+func TestMatchmakingJoinedHeartbeatAndLeftLifecycle(t *testing.T) {
+	mmDB, err := server.GetMMDB(context.Background())
+	if err != nil {
+		t.Fatalf("get mm db: %v", err)
+	}
+	if err := server.ResetMMDB(context.Background(), mmDB); err != nil {
+		t.Fatalf("reset mm db: %v", err)
+	}
+	if err := server.InitMMDB(context.Background(), mmDB); err != nil {
+		t.Fatalf("init mm db: %v", err)
+	}
+
+	manager := &fakeMatchmakingManager{}
+	api := server.NewMatchmakingAPI("NA", manager)
+	api.SetMatchSize(1)
+	api.SetMatchStartWaitForTesting(0)
+
+	uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	playerID := "player-lifecycle-" + uniqueSuffix
+	partyID := "party-lifecycle-" + uniqueSuffix
+	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (server.QueueContext, error) {
+		return server.QueueContext{
+			RequesterPlayerID: playerID,
+			PartyID:           partyID,
+			Members: []server.QueueMember{
+				{PlayerID: playerID, Username: "lifecycle-pilot"},
+			},
+		}, nil
+	})
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	queueRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/queue", strings.NewReader(`{"sessionToken":"session-1"}`))
+	queueResponse := httptest.NewRecorder()
+	mux.ServeHTTP(queueResponse, queueRequest)
+	if queueResponse.Code != http.StatusAccepted {
+		t.Fatalf("expected queue status %d, got %d", http.StatusAccepted, queueResponse.Code)
+	}
+
+	var queuePayload map[string]any
+	if err := json.NewDecoder(queueResponse.Body).Decode(&queuePayload); err != nil {
+		t.Fatalf("decode queue response: %v", err)
+	}
+	ids, ok := queuePayload["ticketIds"].([]any)
+	if !ok || len(ids) == 0 {
+		t.Fatalf("expected ticketIds array")
+	}
+	ticketID, ok := ids[0].(string)
+	if !ok || ticketID == "" {
+		t.Fatalf("expected ticketId string")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		statusRequest := httptest.NewRequest(http.MethodGet, "/matchmaking/status?sessionToken=session-1", nil)
+		statusResponse := httptest.NewRecorder()
+		mux.ServeHTTP(statusResponse, statusRequest)
+		if statusResponse.Code != http.StatusOK {
+			t.Fatalf("expected status status code %d, got %d", http.StatusOK, statusResponse.Code)
+		}
+
+		var statusPayload map[string]any
+		if err := json.NewDecoder(statusResponse.Body).Decode(&statusPayload); err != nil {
+			t.Fatalf("decode status response: %v", err)
+		}
+
+		if statusPayload["status"] == "matched" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	joinedRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/joined", strings.NewReader(`{"sessionToken":"session-1","ticketId":"`+ticketID+`"}`))
+	joinedResponse := httptest.NewRecorder()
+	mux.ServeHTTP(joinedResponse, joinedRequest)
+	if joinedResponse.Code != http.StatusOK {
+		t.Fatalf("expected joined status %d, got %d", http.StatusOK, joinedResponse.Code)
+	}
+
+	var joinedPayload map[string]any
+	if err := json.NewDecoder(joinedResponse.Body).Decode(&joinedPayload); err != nil {
+		t.Fatalf("decode joined response: %v", err)
+	}
+	if joinedPayload["status"] != "in_match" {
+		t.Fatalf("expected joined status in_match, got %v", joinedPayload["status"])
+	}
+
+	heartbeatRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/heartbeat", strings.NewReader(`{"sessionToken":"session-1"}`))
+	heartbeatResponse := httptest.NewRecorder()
+	mux.ServeHTTP(heartbeatResponse, heartbeatRequest)
+	if heartbeatResponse.Code != http.StatusOK {
+		t.Fatalf("expected heartbeat status %d, got %d", http.StatusOK, heartbeatResponse.Code)
+	}
+
+	leftRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/left", strings.NewReader(`{"sessionToken":"session-1"}`))
+	leftResponse := httptest.NewRecorder()
+	mux.ServeHTTP(leftResponse, leftRequest)
+	if leftResponse.Code != http.StatusOK {
+		t.Fatalf("expected left status %d, got %d", http.StatusOK, leftResponse.Code)
+	}
+
+	var leftPayload map[string]any
+	if err := json.NewDecoder(leftResponse.Body).Decode(&leftPayload); err != nil {
+		t.Fatalf("decode left response: %v", err)
+	}
+	if leftPayload["status"] != "not_queued" {
+		t.Fatalf("expected left status not_queued, got %v", leftPayload["status"])
+	}
+
+	finalStatusRequest := httptest.NewRequest(http.MethodGet, "/matchmaking/status?sessionToken=session-1", nil)
+	finalStatusResponse := httptest.NewRecorder()
+	mux.ServeHTTP(finalStatusResponse, finalStatusRequest)
+	if finalStatusResponse.Code != http.StatusOK {
+		t.Fatalf("expected final status code %d, got %d", http.StatusOK, finalStatusResponse.Code)
+	}
+
+	var finalStatusPayload map[string]any
+	if err := json.NewDecoder(finalStatusResponse.Body).Decode(&finalStatusPayload); err != nil {
+		t.Fatalf("decode final status response: %v", err)
+	}
+	if finalStatusPayload["status"] != "not_queued" {
+		t.Fatalf("expected final status not_queued, got %v", finalStatusPayload["status"])
+	}
+}

@@ -95,6 +95,9 @@ func NewMatchmakingAPI(region string, manager MatchmakingManager) *MatchmakingAP
 func (api *MatchmakingAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/matchmaking/queue", api.handleQueue)
 	mux.HandleFunc("/matchmaking/join", api.handleJoin)
+	mux.HandleFunc("/matchmaking/joined", api.handleJoined)
+	mux.HandleFunc("/matchmaking/left", api.handleLeft)
+	mux.HandleFunc("/matchmaking/heartbeat", api.handleHeartbeat)
 	mux.HandleFunc("/matchmaking/status", api.handleStatus)
 	mux.HandleFunc("/matchmaking/cancel", api.handleCancel)
 	mux.HandleFunc("/matchmaking/party/invite", api.handlePartyInvite)
@@ -339,7 +342,7 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 			return
 		}
 		matchedPort := ""
-		if ticketPayload.Status == "matched" && ticketPayload.Instance != nil {
+		if (ticketPayload.Status == "matched" || ticketPayload.Status == "in_match") && ticketPayload.Instance != nil {
 			matchedPort = ticketPayload.Instance.Port
 		}
 
@@ -404,12 +407,16 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 		switch status.Status {
 		case "error":
 			overallStatus = "error"
-		case "matched":
+		case "in_match":
 			if overallStatus != "error" {
+				overallStatus = "in_match"
+			}
+		case "matched":
+			if overallStatus != "error" && overallStatus != "in_match" {
 				overallStatus = "matched"
 			}
 		case "searching":
-			if overallStatus != "error" && overallStatus != "matched" {
+			if overallStatus != "error" && overallStatus != "matched" && overallStatus != "in_match" {
 				overallStatus = "searching"
 			}
 		}
@@ -420,7 +427,7 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 	for _, status := range collectedStatuses {
 		if status.PlayerID == queueContext.RequesterPlayerID {
 			ownTicketID = status.TicketID
-			if status.Status == "matched" && status.Instance != nil {
+			if (status.Status == "matched" || status.Status == "in_match") && status.Instance != nil {
 				matchedPort = status.Instance.Port
 			}
 			break
@@ -429,7 +436,7 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 
 	if matchedPort == "" && overallStatus == "matched" {
 		for _, status := range collectedStatuses {
-			if status.Status == "matched" && status.Instance != nil {
+			if (status.Status == "matched" || status.Status == "in_match") && status.Instance != nil {
 				matchedPort = status.Instance.Port
 				break
 			}
@@ -447,6 +454,216 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 		"region":   api.region,
 		"tickets":  collectedStatuses,
 		"members":  queueContext.Members,
+	})
+}
+
+func (api *MatchmakingAPI) handleJoined(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		response.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var joinedRequest struct {
+		SessionToken string `json:"sessionToken"`
+		TicketID     string `json:"ticketId"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&joinedRequest); err != nil {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if joinedRequest.SessionToken == "" || joinedRequest.TicketID == "" {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	api.mu.Lock()
+	resolver := api.resolveQueueContext
+	api.mu.Unlock()
+	queueContext, err := resolver(request.Context(), joinedRequest.SessionToken)
+	if err != nil {
+		if errors.Is(err, errInvalidSessionToken) {
+			response.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	memberSet := make(map[string]struct{}, len(queueContext.Members))
+	for _, member := range queueContext.Members {
+		memberSet[member.PlayerID] = struct{}{}
+	}
+
+	ticketPayload, found, err := loadTicketStatusByIDFromDB(request.Context(), joinedRequest.TicketID)
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		response.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if _, ok := memberSet[ticketPayload.PlayerID]; !ok {
+		response.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	mmDB, err := GetMMDB(request.Context())
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	updated, err := markTicketsInMatchByTicketID(request.Context(), mmDB, joinedRequest.TicketID)
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	api.mu.Lock()
+	if ticket, ok := api.tickets[joinedRequest.TicketID]; ok {
+		ticket.status = "in_match"
+	}
+	api.mu.Unlock()
+
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(response).Encode(map[string]any{
+		"status":         "in_match",
+		"ticketId":       joinedRequest.TicketID,
+		"partyId":        ticketPayload.PartyID,
+		"updatedTickets": updated,
+	})
+}
+
+func (api *MatchmakingAPI) handleLeft(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		response.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var leftRequest struct {
+		SessionToken string `json:"sessionToken"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&leftRequest); err != nil {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if leftRequest.SessionToken == "" {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	api.mu.Lock()
+	resolver := api.resolveQueueContext
+	api.mu.Unlock()
+	queueContext, err := resolver(request.Context(), leftRequest.SessionToken)
+	if err != nil {
+		if errors.Is(err, errInvalidSessionToken) {
+			response.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	memberIDs := make([]string, 0, len(queueContext.Members))
+	for _, member := range queueContext.Members {
+		memberIDs = append(memberIDs, member.PlayerID)
+	}
+
+	mmDB, err := GetMMDB(request.Context())
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	updated, err := markPlayersLeft(request.Context(), mmDB, memberIDs)
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	api.mu.Lock()
+	for _, ticket := range api.tickets {
+		if ticket == nil {
+			continue
+		}
+		for _, playerID := range memberIDs {
+			if ticket.playerID == playerID {
+				ticket.status = "left"
+				ticket.instance = nil
+				ticket.error = ""
+				break
+			}
+		}
+	}
+	api.mu.Unlock()
+
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(response).Encode(map[string]any{
+		"status":         "not_queued",
+		"partyId":        queueContext.PartyID,
+		"updatedTickets": updated,
+	})
+}
+
+func (api *MatchmakingAPI) handleHeartbeat(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		response.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var heartbeatRequest struct {
+		SessionToken string `json:"sessionToken"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&heartbeatRequest); err != nil {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if heartbeatRequest.SessionToken == "" {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	api.mu.Lock()
+	resolver := api.resolveQueueContext
+	api.mu.Unlock()
+	queueContext, err := resolver(request.Context(), heartbeatRequest.SessionToken)
+	if err != nil {
+		if errors.Is(err, errInvalidSessionToken) {
+			response.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	memberIDs := make([]string, 0, len(queueContext.Members))
+	for _, member := range queueContext.Members {
+		memberIDs = append(memberIDs, member.PlayerID)
+	}
+
+	mmDB, err := GetMMDB(request.Context())
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	updated, err := touchPlayersHeartbeat(request.Context(), mmDB, memberIDs)
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(response).Encode(map[string]any{
+		"status":         "ok",
+		"partyId":        queueContext.PartyID,
+		"updatedTickets": updated,
+		"heartbeatAt":    time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -1982,6 +2199,99 @@ func updateTicketStatuses(ctx context.Context, mmDB *Database, ticketIDs []strin
 	return err
 }
 
+func markTicketsInMatchByTicketID(ctx context.Context, mmDB *Database, ticketID string) (int64, error) {
+	if mmDB == nil || mmDB.DB == nil {
+		return 0, nil
+	}
+
+	now := time.Now().UTC()
+	query := `WITH selected_ticket AS (
+		SELECT ticket_id, COALESCE(party_id, '') AS party_id, game_id
+		FROM matchmaking_tickets
+		WHERE ticket_id = $1
+		LIMIT 1
+	), target_tickets AS (
+		SELECT mt.ticket_id
+		FROM matchmaking_tickets mt
+		JOIN selected_ticket st
+			ON mt.game_id = st.game_id
+			AND (mt.party_id = st.party_id OR st.party_id = '')
+		WHERE mt.status IN ('matched', 'in_match')
+	)
+	UPDATE matchmaking_tickets mt
+	SET status = 'in_match', joined_at = COALESCE(joined_at, $2), last_heartbeat_at = $2
+	WHERE mt.ticket_id IN (SELECT ticket_id FROM target_tickets)`
+
+	result, err := submitExec(ctx, mmDB.DB, query, ticketID, now)
+	if err != nil {
+		return 0, err
+	}
+
+	return result.RowsAffected()
+}
+
+func markPlayersLeft(ctx context.Context, mmDB *Database, playerIDs []string) (int64, error) {
+	if mmDB == nil || mmDB.DB == nil || len(playerIDs) == 0 {
+		return 0, nil
+	}
+
+	now := time.Now().UTC()
+	query := fmt.Sprintf(`WITH latest_active_tickets AS (
+		SELECT DISTINCT ON (player_id) ticket_id
+		FROM matchmaking_tickets
+		WHERE player_id IN (%s)
+			AND status IN ('queued', 'searching', 'matching', 'matched', 'in_match')
+		ORDER BY player_id, queued_at DESC
+	)
+	UPDATE matchmaking_tickets mt
+	SET status = 'left', game_id = NULL, left_at = $1, last_heartbeat_at = $1
+	WHERE mt.ticket_id IN (SELECT ticket_id FROM latest_active_tickets)`, buildPlaceholderList(2, len(playerIDs)))
+
+	args := make([]any, 0, 1+len(playerIDs))
+	args = append(args, now)
+	for _, playerID := range playerIDs {
+		args = append(args, playerID)
+	}
+
+	result, err := submitExec(ctx, mmDB.DB, query, args...)
+	if err != nil {
+		return 0, err
+	}
+
+	return result.RowsAffected()
+}
+
+func touchPlayersHeartbeat(ctx context.Context, mmDB *Database, playerIDs []string) (int64, error) {
+	if mmDB == nil || mmDB.DB == nil || len(playerIDs) == 0 {
+		return 0, nil
+	}
+
+	now := time.Now().UTC()
+	query := fmt.Sprintf(`WITH latest_active_tickets AS (
+		SELECT DISTINCT ON (player_id) ticket_id
+		FROM matchmaking_tickets
+		WHERE player_id IN (%s)
+			AND status IN ('matched', 'in_match')
+		ORDER BY player_id, queued_at DESC
+	)
+	UPDATE matchmaking_tickets mt
+	SET last_heartbeat_at = $1
+	WHERE mt.ticket_id IN (SELECT ticket_id FROM latest_active_tickets)`, buildPlaceholderList(2, len(playerIDs)))
+
+	args := make([]any, 0, 1+len(playerIDs))
+	args = append(args, now)
+	for _, playerID := range playerIDs {
+		args = append(args, playerID)
+	}
+
+	result, err := submitExec(ctx, mmDB.DB, query, args...)
+	if err != nil {
+		return 0, err
+	}
+
+	return result.RowsAffected()
+}
+
 func buildPlaceholderList(start int, count int) string {
 	placeholders := make([]string, 0, count)
 	for i := 0; i < count; i++ {
@@ -1994,6 +2304,8 @@ func normalizeTicketStatus(status string) string {
 	switch status {
 	case "queued", "matching":
 		return "searching"
+	case "left":
+		return "not_queued"
 	default:
 		return status
 	}
