@@ -296,49 +296,33 @@ func (manager *GameServerManager) streamContainerLogs(containerName string) {
 	go func() {
 		cmd := exec.Command("docker", "logs", "-f", containerName)
 
-		stdoutPipe, err := cmd.StdoutPipe()
+		pipe, err := cmd.StdoutPipe()
 		if err != nil {
 			fmt.Printf("[container:%s][logs] failed to create stdout pipe: %v\n", containerName, err)
 			return
 		}
-
-		stderrPipe, err := cmd.StderrPipe()
-		if err != nil {
-			fmt.Printf("[container:%s][logs] failed to create stderr pipe: %v\n", containerName, err)
-			return
-		}
+		cmd.Stderr = cmd.Stdout
 
 		if err := cmd.Start(); err != nil {
 			fmt.Printf("[container:%s][logs] failed to start docker logs: %v\n", containerName, err)
 			return
 		}
 
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			pipeContainerLogStream(containerName, "stdout", stdoutPipe)
-		}()
-		go func() {
-			defer wg.Done()
-			pipeContainerLogStream(containerName, "stderr", stderrPipe)
-		}()
+		pipeContainerLogStream(containerName, pipe)
 
-		waitErr := cmd.Wait()
-		wg.Wait()
-		if waitErr != nil {
+		if waitErr := cmd.Wait(); waitErr != nil {
 			fmt.Printf("[container:%s][logs] docker logs exited: %v\n", containerName, waitErr)
 		}
 	}()
 }
 
-func pipeContainerLogStream(containerName string, streamName string, reader io.Reader) {
+func pipeContainerLogStream(containerName string, reader io.Reader) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		fmt.Printf("[container:%s][%s] %s\n", containerName, streamName, scanner.Text())
+		fmt.Printf("[container:%s] %s\n", containerName, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("[container:%s][%s] scanner error: %v\n", containerName, streamName, err)
+		fmt.Printf("[container:%s] scanner error: %v\n", containerName, err)
 	}
 }
 
