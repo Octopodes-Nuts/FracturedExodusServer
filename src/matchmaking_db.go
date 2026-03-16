@@ -18,6 +18,7 @@ var initMMDBStatements = []string{
 		status TEXT NOT NULL DEFAULT 'starting',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);`,
+	`ALTER TABLE games ADD COLUMN IF NOT EXISTS server_name TEXT;`,
 	`CREATE TABLE IF NOT EXISTS matchmaking_tickets (
 		ticket_id TEXT PRIMARY KEY,
 		player_id TEXT NOT NULL,

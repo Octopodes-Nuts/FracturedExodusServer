@@ -51,11 +51,12 @@ type GameInstance struct {
 }
 
 type GameServerManager struct {
-	config    GameServerConfig
-	buildOnce sync.Once
-	buildErr  error
-	mu        sync.Mutex
-	instances map[string]GameInstance
+	config          GameServerConfig
+	buildOnce       sync.Once
+	buildErr        error
+	mu              sync.Mutex
+	registrationKey string
+	instances       map[string]GameInstance
 }
 
 func NewGameServerManager(config GameServerConfig) *GameServerManager {
@@ -131,15 +132,14 @@ func (manager *GameServerManager) buildImage(ctx context.Context) error {
 
 func (manager *GameServerManager) runContainer(ctx context.Context, containerName string, requestedPort string) (string, error) {
 	containerPort := fmt.Sprintf("%s/%s", manager.config.GamePort, manager.config.Protocol)
-	registrationKey := os.Getenv("MM_SERVER_REGISTRATION_KEY")
+	registrationKey, err := manager.getOrCreateRegistrationKey()
+	if err != nil {
+		return "", err
+	}
 
 	envArgs := []string{
 		"-e", fmt.Sprintf("MM_SERVER_NAME=%s", containerName),
-	}
-	if registrationKey != "" {
-		envArgs = append(envArgs, "-e", fmt.Sprintf("MM_SERVER_REGISTRATION_KEY=%s", registrationKey))
-	} else {
-		fmt.Printf("[container:%s][startup] MM_SERVER_REGISTRATION_KEY is not set; server registration may fail\n", containerName)
+		"-e", fmt.Sprintf("MM_SERVER_REGISTRATION_KEY=%s", registrationKey),
 	}
 
 	var cmd *exec.Cmd
@@ -161,6 +161,26 @@ func (manager *GameServerManager) runContainer(ctx context.Context, containerNam
 	}
 
 	return strings.TrimSpace(string(output)), nil
+}
+
+func (manager *GameServerManager) getOrCreateRegistrationKey() (string, error) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	if manager.registrationKey != "" {
+		return manager.registrationKey, nil
+	}
+
+	registrationKey, err := generateJoinKey()
+	if err != nil {
+		return "", fmt.Errorf("generate registration key: %w", err)
+	}
+	if err := os.Setenv("MM_SERVER_REGISTRATION_KEY", registrationKey); err != nil {
+		return "", fmt.Errorf("set registration key env: %w", err)
+	}
+
+	manager.registrationKey = registrationKey
+	return manager.registrationKey, nil
 }
 
 func (manager *GameServerManager) inspectPorts(ctx context.Context, containerName string) (map[string]string, error) {

@@ -334,7 +334,7 @@ func TestMatchmakingMatchEndedBadRequest(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/matchmaking/match-ended", strings.NewReader(`{"sessionToken":""}`))
+	request := httptest.NewRequest(http.MethodPost, "/matchmaking/match-ended", strings.NewReader(`{"serverToken":""}`))
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 

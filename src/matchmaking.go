@@ -706,39 +706,18 @@ func (api *MatchmakingAPI) handleMatchEnded(response http.ResponseWriter, reques
 	}
 
 	var matchEndedRequest struct {
-		SessionToken string `json:"sessionToken"`
+		ServerToken string `json:"serverToken"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&matchEndedRequest); err != nil {
 		fmt.Printf("[DEBUG][matchEnded] decode failed: %v\n", err)
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if matchEndedRequest.SessionToken == "" {
-		fmt.Printf("[DEBUG][matchEnded] rejected request: missing sessionToken\n")
+	if matchEndedRequest.ServerToken == "" {
+		fmt.Printf("[DEBUG][matchEnded] rejected request: missing serverToken\n")
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
-	api.mu.Lock()
-	resolver := api.resolveQueueContext
-	api.mu.Unlock()
-	queueContext, err := resolver(request.Context(), matchEndedRequest.SessionToken)
-	if err != nil {
-		if errors.Is(err, errInvalidSessionToken) {
-			fmt.Printf("[DEBUG][matchEnded] session validation failed: invalid session token\n")
-			response.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		fmt.Printf("[DEBUG][matchEnded] queue context resolver failed: %v\n", err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	memberIDs := make([]string, 0, len(queueContext.Members))
-	for _, member := range queueContext.Members {
-		memberIDs = append(memberIDs, member.PlayerID)
-	}
-	fmt.Printf("[DEBUG][matchEnded] resolved members partyId=%s members=%d\n", queueContext.PartyID, len(memberIDs))
 
 	mmDB, err := GetMMDB(request.Context())
 	if err != nil {
@@ -747,9 +726,23 @@ func (api *MatchmakingAPI) handleMatchEnded(response http.ResponseWriter, reques
 		return
 	}
 
-	updatedTickets, updatedGames, err := markPlayersMatchEnded(request.Context(), mmDB, memberIDs)
+	serverName, err := resolveServerNameFromToken(request.Context(), mmDB, matchEndedRequest.ServerToken)
 	if err != nil {
-		fmt.Printf("[DEBUG][matchEnded] markPlayersMatchEnded failed: %v\n", err)
+		if errors.Is(err, errInvalidServerToken) {
+			fmt.Printf("[DEBUG][matchEnded] server token validation failed\n")
+			response.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		fmt.Printf("[DEBUG][matchEnded] server token lookup failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("[DEBUG][matchEnded] authenticated serverName=%s\n", serverName)
+
+	updatedTickets, updatedGames, err := markMatchEndedByServerName(request.Context(), mmDB, serverName)
+	if err != nil {
+		fmt.Printf("[DEBUG][matchEnded] markMatchEndedByServerName failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -759,23 +752,20 @@ func (api *MatchmakingAPI) handleMatchEnded(response http.ResponseWriter, reques
 		if ticket == nil {
 			continue
 		}
-		for _, playerID := range memberIDs {
-			if ticket.playerID == playerID {
-				ticket.status = "left"
-				ticket.instance = nil
-				ticket.error = ""
-				break
-			}
+		if ticket.instance != nil && ticket.instance.ContainerName == serverName {
+			ticket.status = "left"
+			ticket.instance = nil
+			ticket.error = ""
 		}
 	}
 	api.mu.Unlock()
 
-	fmt.Printf("[DEBUG][matchEnded] request succeeded partyId=%s updatedTickets=%d updatedGames=%d\n", queueContext.PartyID, updatedTickets, updatedGames)
+	fmt.Printf("[DEBUG][matchEnded] request succeeded serverName=%s updatedTickets=%d updatedGames=%d\n", serverName, updatedTickets, updatedGames)
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{
 		"status":         "not_queued",
-		"partyId":        queueContext.PartyID,
+		"serverName":     serverName,
 		"updatedTickets": updatedTickets,
 		"updatedGames":   updatedGames,
 	})
@@ -1928,6 +1918,42 @@ func removeTicket(queue []matchGroup, ticketID string) []matchGroup {
 }
 
 var errInvalidSessionToken = errors.New("invalid session token")
+var errInvalidServerToken = errors.New("invalid server token")
+
+func resolveServerNameFromToken(ctx context.Context, mmDB *Database, serverToken string) (string, error) {
+	if mmDB == nil || mmDB.DB == nil || serverToken == "" {
+		return "", errInvalidServerToken
+	}
+
+	hash := sha256.Sum256([]byte(serverToken))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	rows, err := submitQuery(ctx, mmDB.DB, "SELECT server_name FROM server_tokens WHERE token_hash = $1 AND revoked = FALSE LIMIT 1", tokenHash)
+	if err != nil {
+		return "", err
+	}
+
+	serverName := ""
+	if rows.Next() {
+		if scanErr := rows.Scan(&serverName); scanErr != nil {
+			_ = rows.Close()
+			return "", scanErr
+		}
+	}
+	if closeErr := rows.Close(); closeErr != nil {
+		return "", closeErr
+	}
+
+	if serverName == "" {
+		return "", errInvalidServerToken
+	}
+
+	if _, err := submitExec(ctx, mmDB.DB, "UPDATE server_tokens SET last_used_at = $1 WHERE token_hash = $2", time.Now().UTC(), tokenHash); err != nil {
+		return "", err
+	}
+
+	return serverName, nil
+}
 
 func resolveQueueContextFromSession(ctx context.Context, sessionToken string) (QueueContext, error) {
 	if sessionToken == "" {
@@ -2342,10 +2368,10 @@ func persistMatchResult(ctx context.Context, mmDB *Database, instance GameInstan
 		gameID = "game-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 
-	gameInsert := `INSERT INTO games (game_id, ip_addr, port, status, created_at)
-		VALUES ($1, $2, $3, 'ready', $4)
-		ON CONFLICT (game_id) DO UPDATE SET ip_addr = EXCLUDED.ip_addr, port = EXCLUDED.port, status = EXCLUDED.status`
-	if _, err := submitExec(ctx, mmDB.DB, gameInsert, gameID, instance.Host, instance.Port, time.Now().UTC()); err != nil {
+	gameInsert := `INSERT INTO games (game_id, ip_addr, port, status, created_at, server_name)
+		VALUES ($1, $2, $3, 'ready', $4, $5)
+		ON CONFLICT (game_id) DO UPDATE SET ip_addr = EXCLUDED.ip_addr, port = EXCLUDED.port, status = EXCLUDED.status, server_name = EXCLUDED.server_name`
+	if _, err := submitExec(ctx, mmDB.DB, gameInsert, gameID, instance.Host, instance.Port, time.Now().UTC(), instance.ContainerName); err != nil {
 		return err
 	}
 
@@ -2536,6 +2562,46 @@ func markPlayersMatchEnded(ctx context.Context, mmDB *Database, playerIDs []stri
 	}
 
 	gameResult, err := submitExec(ctx, mmDB.DB, updateGamesQuery, gameArgs...)
+	if err != nil {
+		return 0, 0, err
+	}
+	updatedGames, err := gameResult.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return updatedTickets, updatedGames, nil
+}
+
+func markMatchEndedByServerName(ctx context.Context, mmDB *Database, serverName string) (int64, int64, error) {
+	if mmDB == nil || mmDB.DB == nil || strings.TrimSpace(serverName) == "" {
+		return 0, 0, nil
+	}
+
+	now := time.Now().UTC()
+
+	updateTicketsQuery := `UPDATE matchmaking_tickets mt
+		SET status = 'left', game_id = NULL, left_at = $1, last_heartbeat_at = $1
+		WHERE mt.game_id IN (
+			SELECT game_id
+			FROM games
+			WHERE server_name = $2 AND status <> 'ended'
+		)
+		AND mt.status IN ('matched', 'in_match')`
+	ticketResult, err := submitExec(ctx, mmDB.DB, updateTicketsQuery, now, serverName)
+	if err != nil {
+		return 0, 0, err
+	}
+	updatedTickets, err := ticketResult.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	updateGamesQuery := `UPDATE games
+		SET status = 'ended'
+		WHERE server_name = $1
+			AND status <> 'ended'`
+	gameResult, err := submitExec(ctx, mmDB.DB, updateGamesQuery, serverName)
 	if err != nil {
 		return 0, 0, err
 	}
