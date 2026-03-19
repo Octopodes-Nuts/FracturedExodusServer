@@ -319,7 +319,7 @@ func TestMatchmakingMatchEndedMethodNotAllowed(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodGet, "/matchmaking/match-ended", nil)
+	request := httptest.NewRequest(http.MethodGet, "/matchmaking/match/ended", nil)
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 
@@ -334,7 +334,7 @@ func TestMatchmakingMatchEndedBadRequest(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/matchmaking/match-ended", strings.NewReader(`{"serverToken":""}`))
+	request := httptest.NewRequest(http.MethodPost, "/matchmaking/match/ended", strings.NewReader(`{"serverToken":""}`))
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 
@@ -349,7 +349,7 @@ func TestMatchmakingRegisterServerMethodNotAllowed(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodGet, "/matchmaking/register-server", nil)
+	request := httptest.NewRequest(http.MethodGet, "/matchmaking/server/register", nil)
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 
@@ -364,7 +364,7 @@ func TestMatchmakingRegisterServerBadRequest(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/matchmaking/register-server", strings.NewReader(`{"serverName":""}`))
+	request := httptest.NewRequest(http.MethodPost, "/matchmaking/server/register", strings.NewReader(`{"serverName":""}`))
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 
