@@ -2,15 +2,11 @@ package server
 
 import (
 	"context"
-	cryptorand "crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -99,10 +95,8 @@ func NewMatchmakingAPI(region string, manager MatchmakingManager) *MatchmakingAP
 func (api *MatchmakingAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/matchmaking/queue", api.handleQueue)
 	mux.HandleFunc("/matchmaking/join", api.handleJoin)
-	mux.HandleFunc("/matchmaking/register-server", api.handleRegisterServer)
 	mux.HandleFunc("/matchmaking/joined", api.handleJoined)
 	mux.HandleFunc("/matchmaking/left", api.handleLeft)
-	mux.HandleFunc("/matchmaking/match-ended", api.handleMatchEnded)
 	mux.HandleFunc("/matchmaking/heartbeat", api.handleHeartbeat)
 	mux.HandleFunc("/matchmaking/status", api.handleStatus)
 	mux.HandleFunc("/matchmaking/cancel", api.handleCancel)
@@ -141,7 +135,9 @@ func (api *MatchmakingAPI) SetMatchStartWaitForTesting(wait time.Duration) {
 }
 
 func (api *MatchmakingAPI) handleQueue(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][queue] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][queue] rejected request: invalid method=%s\n", request.Method)
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -150,10 +146,12 @@ func (api *MatchmakingAPI) handleQueue(response http.ResponseWriter, request *ht
 		SessionToken string `json:"sessionToken"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&queueRequest); err != nil {
+		fmt.Printf("[DEBUG][queue] decode failed: %v\n", err)
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	if queueRequest.SessionToken == "" {
+		fmt.Printf("[DEBUG][queue] rejected request: missing sessionToken\n")
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -164,18 +162,22 @@ func (api *MatchmakingAPI) handleQueue(response http.ResponseWriter, request *ht
 	queueContext, err := resolver(request.Context(), queueRequest.SessionToken)
 	if err != nil {
 		if errors.Is(err, errInvalidSessionToken) {
+			fmt.Printf("[DEBUG][queue] session validation failed: %v\n", err)
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		fmt.Printf("[DEBUG][queue] queue resolution failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	partyID, ticketIDs, playerTicketMap, err := api.enqueueGroup(request.Context(), queueContext.PartyID, queueContext.Members)
 	if err != nil {
+		fmt.Printf("[DEBUG][queue] enqueueGroup failed partyId=%s memberCount=%d err=%v\n", queueContext.PartyID, len(queueContext.Members), err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	fmt.Printf("[DEBUG][queue] queue successful partyId=%s ticketCount=%d requesterPlayerId=%s\n", partyID, len(ticketIDs), queueContext.RequesterPlayerID)
 
 	ticketAssignments := make([]map[string]string, 0, len(queueContext.Members))
 	for _, member := range queueContext.Members {
@@ -206,7 +208,9 @@ func generateMatchmakingTicket() string {
 }
 
 func (api *MatchmakingAPI) handleJoin(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][join] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][join] rejected request: invalid method=%s\n", request.Method)
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -215,20 +219,25 @@ func (api *MatchmakingAPI) handleJoin(response http.ResponseWriter, request *htt
 		TicketID string `json:"ticketId"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&joinRequest); err != nil {
+		fmt.Printf("[DEBUG][join] decode failed: %v\n", err)
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	if joinRequest.TicketID == "" {
+		fmt.Printf("[DEBUG][join] rejected request: missing ticketId\n")
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	fmt.Printf("[DEBUG][join] decoded request ticketId=%s\n", joinRequest.TicketID)
 
 	ticketPayload, found, err := loadTicketStatusByIDFromDB(request.Context(), joinRequest.TicketID)
 	if err != nil || !found {
+		fmt.Printf("[DEBUG][join] ticket not found in DB ticketId=%s found=%t err=%v\n", joinRequest.TicketID, found, err)
 		api.mu.Lock()
 		ticket, ok := api.tickets[joinRequest.TicketID]
 		api.mu.Unlock()
 		if !ok {
+			fmt.Printf("[DEBUG][join] ticket not in memory ticketId=%s\n", joinRequest.TicketID)
 			response.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -254,90 +263,10 @@ func (api *MatchmakingAPI) handleJoin(response http.ResponseWriter, request *htt
 	})
 }
 
-func (api *MatchmakingAPI) handleRegisterServer(response http.ResponseWriter, request *http.Request) {
-	fmt.Printf("[DEBUG][registerServer] request received method=%s path=%s\n", request.Method, request.URL.Path)
-	if request.Method != http.MethodPost {
-		fmt.Printf("[DEBUG][registerServer] rejected request: invalid method=%s\n", request.Method)
-		response.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	var registerRequest struct {
-		ServerName      string `json:"serverName"`
-		RegistrationKey string `json:"registrationKey"`
-	}
-	if err := json.NewDecoder(request.Body).Decode(&registerRequest); err != nil {
-		fmt.Printf("[DEBUG][registerServer] decode failed: %v\n", err)
-		response.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	if registerRequest.ServerName == "" || registerRequest.RegistrationKey == "" {
-		fmt.Printf("[DEBUG][registerServer] rejected request: missing fields serverName=%q registrationKeySet=%t\n", registerRequest.ServerName, registerRequest.RegistrationKey != "")
-		response.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":  "error",
-			"message": "serverName and registrationKey are required",
-		})
-		return
-	}
-
-	expectedRegistrationKey := os.Getenv("MM_SERVER_REGISTRATION_KEY")
-	if expectedRegistrationKey == "" {
-		fmt.Printf("[DEBUG][registerServer] rejected request: MM_SERVER_REGISTRATION_KEY is not configured\n")
-		response.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":  "error",
-			"message": "server registration is disabled",
-		})
-		return
-	}
-
-	if registerRequest.RegistrationKey != expectedRegistrationKey {
-		fmt.Printf("[DEBUG][registerServer] rejected request: invalid registration key for serverName=%s\n", registerRequest.ServerName)
-		response.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":  "error",
-			"message": "invalid registration key",
-		})
-		return
-	}
-
-	mmDB, err := GetMMDB(request.Context())
-	if err != nil {
-		fmt.Printf("[DEBUG][registerServer] GetMMDB failed: %v\n", err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	serverToken, tokenHash, err := generateServerToken()
-	if err != nil {
-		fmt.Printf("[DEBUG][registerServer] generateServerToken failed: %v\n", err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	tokenID := "srv-token-" + uuid.NewString()
-	if err := persistServerToken(request.Context(), mmDB, tokenID, registerRequest.ServerName, tokenHash); err != nil {
-		fmt.Printf("[DEBUG][registerServer] persistServerToken failed serverName=%s err=%v\n", registerRequest.ServerName, err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	fmt.Printf("[DEBUG][registerServer] server token registered tokenId=%s serverName=%s\n", tokenID, registerRequest.ServerName)
-	response.Header().Set("Content-Type", "application/json")
-	response.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(response).Encode(map[string]any{
-		"status":      "ok",
-		"tokenId":     tokenID,
-		"serverName":  registerRequest.ServerName,
-		"serverToken": serverToken,
-		"issuedAt":    time.Now().UTC().Format(time.RFC3339),
-	})
-}
-
 func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][status] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodGet && request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][status] rejected request: invalid method=%s\n", request.Method)
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -350,14 +279,18 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 	if request.Method == http.MethodGet {
 		statusRequest.SessionToken = request.URL.Query().Get("sessionToken")
 		statusRequest.TicketID = request.URL.Query().Get("ticketId")
+		fmt.Printf("[DEBUG][status] decoded GET request sessionTokenSet=%t ticketId=%s\n", statusRequest.SessionToken != "", statusRequest.TicketID)
 	} else {
 		if err := json.NewDecoder(request.Body).Decode(&statusRequest); err != nil {
+			fmt.Printf("[DEBUG][status] decode failed: %v\n", err)
 			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		fmt.Printf("[DEBUG][status] decoded POST request sessionTokenSet=%t ticketId=%s\n", statusRequest.SessionToken != "", statusRequest.TicketID)
 	}
 
 	if statusRequest.SessionToken == "" {
+		fmt.Printf("[DEBUG][status] rejected request: missing sessionToken\n")
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -368,9 +301,11 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 	queueContext, err := resolver(request.Context(), statusRequest.SessionToken)
 	if err != nil {
 		if errors.Is(err, errInvalidSessionToken) {
+			fmt.Printf("[DEBUG][status] session validation failed: %v\n", err)
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		fmt.Printf("[DEBUG][status] queue context resolution failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -420,12 +355,15 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 	}
 
 	if statusRequest.TicketID != "" {
+		fmt.Printf("[DEBUG][status] fetching single ticket status ticketId=%s\n", statusRequest.TicketID)
 		ticketPayload, ok, ticketErr := getTicketStatus(statusRequest.TicketID)
 		if ticketErr != nil {
+			fmt.Printf("[DEBUG][status] ticket status lookup failed ticketId=%s err=%v\n", statusRequest.TicketID, ticketErr)
 			response.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		if !ok {
+			fmt.Printf("[DEBUG][status] ticket not found ticketId=%s\n", statusRequest.TicketID)
 			response.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -449,8 +387,10 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 		return
 	}
 
+	fmt.Printf("[DEBUG][status] fetching all party member statuses requesterPlayerId=%s memberCount=%d\n", queueContext.RequesterPlayerID, len(queueContext.Members))
 	collectedStatuses, dbErr := loadLatestTicketStatusesFromDB(request.Context(), queueContext)
 	if dbErr != nil {
+		fmt.Printf("[DEBUG][status] loadLatestTicketStatusesFromDB failed, using in-memory stats err=%v\n", dbErr)
 		api.mu.Lock()
 		collectedStatuses = make([]ticketStatus, 0, len(api.tickets))
 		for ticketID, ticket := range api.tickets {
@@ -531,6 +471,7 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 		}
 	}
 
+	fmt.Printf("[DEBUG][status] status response overallStatus=%s ticketCount=%d ownTicketId=%s port=%s\n", overallStatus, len(collectedStatuses), ownTicketID, matchedPort)
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{
@@ -546,6 +487,7 @@ func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *h
 }
 
 func (api *MatchmakingAPI) handleJoined(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][joined] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -556,13 +498,16 @@ func (api *MatchmakingAPI) handleJoined(response http.ResponseWriter, request *h
 		TicketID     string `json:"ticketId"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&joinedRequest); err != nil {
+		fmt.Printf("[DEBUG][joined] decode failed: %v\n", err)
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	if joinedRequest.SessionToken == "" || joinedRequest.TicketID == "" {
+		fmt.Printf("[DEBUG][joined] rejected request: missing fields sessionTokenSet=%t ticketId=%s\n", joinedRequest.SessionToken != "", joinedRequest.TicketID)
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	fmt.Printf("[DEBUG][joined] decoded request ticketId=%s\n", joinedRequest.TicketID)
 
 	api.mu.Lock()
 	resolver := api.resolveQueueContext
@@ -570,9 +515,11 @@ func (api *MatchmakingAPI) handleJoined(response http.ResponseWriter, request *h
 	queueContext, err := resolver(request.Context(), joinedRequest.SessionToken)
 	if err != nil {
 		if errors.Is(err, errInvalidSessionToken) {
+			fmt.Printf("[DEBUG][joined] session validation failed: %v\n", err)
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		fmt.Printf("[DEBUG][joined] queue context resolution failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -584,29 +531,35 @@ func (api *MatchmakingAPI) handleJoined(response http.ResponseWriter, request *h
 
 	ticketPayload, found, err := loadTicketStatusByIDFromDB(request.Context(), joinedRequest.TicketID)
 	if err != nil {
+		fmt.Printf("[DEBUG][joined] loadTicketStatusByIDFromDB failed ticketId=%s err=%v\n", joinedRequest.TicketID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	if !found {
+		fmt.Printf("[DEBUG][joined] ticket not found ticketId=%s\n", joinedRequest.TicketID)
 		response.WriteHeader(http.StatusNotFound)
 		return
 	}
 	if _, ok := memberSet[ticketPayload.PlayerID]; !ok {
+		fmt.Printf("[DEBUG][joined] forbidden: player not in requester party ticketId=%s playerId=%s\n", joinedRequest.TicketID, ticketPayload.PlayerID)
 		response.WriteHeader(http.StatusForbidden)
 		return
 	}
 
 	mmDB, err := GetMMDB(request.Context())
 	if err != nil {
+		fmt.Printf("[DEBUG][joined] GetMMDB failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	updated, err := markTicketsInMatchByTicketID(request.Context(), mmDB, joinedRequest.TicketID)
 	if err != nil {
+		fmt.Printf("[DEBUG][joined] markTicketsInMatchByTicketID failed ticketId=%s err=%v\n", joinedRequest.TicketID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	fmt.Printf("[DEBUG][joined] successfully marked tickets in_match ticketId=%s updatedCount=%d\n", joinedRequest.TicketID, updated)
 
 	api.mu.Lock()
 	if ticket, ok := api.tickets[joinedRequest.TicketID]; ok {
@@ -625,7 +578,9 @@ func (api *MatchmakingAPI) handleJoined(response http.ResponseWriter, request *h
 }
 
 func (api *MatchmakingAPI) handleLeft(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][left] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][left] rejected request: invalid method=%s\n", request.Method)
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -634,10 +589,12 @@ func (api *MatchmakingAPI) handleLeft(response http.ResponseWriter, request *htt
 		SessionToken string `json:"sessionToken"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&leftRequest); err != nil {
+		fmt.Printf("[DEBUG][left] decode failed: %v\n", err)
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	if leftRequest.SessionToken == "" {
+		fmt.Printf("[DEBUG][left] rejected request: missing sessionToken\n")
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -648,9 +605,11 @@ func (api *MatchmakingAPI) handleLeft(response http.ResponseWriter, request *htt
 	queueContext, err := resolver(request.Context(), leftRequest.SessionToken)
 	if err != nil {
 		if errors.Is(err, errInvalidSessionToken) {
+			fmt.Printf("[DEBUG][left] session validation failed: %v\n", err)
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		fmt.Printf("[DEBUG][left] queue context resolution failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -659,18 +618,22 @@ func (api *MatchmakingAPI) handleLeft(response http.ResponseWriter, request *htt
 	for _, member := range queueContext.Members {
 		memberIDs = append(memberIDs, member.PlayerID)
 	}
+	fmt.Printf("[DEBUG][left] marking party members as left partyId=%s memberCount=%d\n", queueContext.PartyID, len(memberIDs))
 
 	mmDB, err := GetMMDB(request.Context())
 	if err != nil {
+		fmt.Printf("[DEBUG][left] GetMMDB failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	updated, err := markPlayersLeft(request.Context(), mmDB, memberIDs)
 	if err != nil {
+		fmt.Printf("[DEBUG][left] markPlayersLeft failed memberCount=%d err=%v\n", len(memberIDs), err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	fmt.Printf("[DEBUG][left] successfully marked players as left memberCount=%d updatedCount=%d\n", len(memberIDs), updated)
 
 	api.mu.Lock()
 	for _, ticket := range api.tickets {
@@ -697,82 +660,10 @@ func (api *MatchmakingAPI) handleLeft(response http.ResponseWriter, request *htt
 	})
 }
 
-func (api *MatchmakingAPI) handleMatchEnded(response http.ResponseWriter, request *http.Request) {
-	fmt.Printf("[DEBUG][matchEnded] request received method=%s path=%s\n", request.Method, request.URL.Path)
-	if request.Method != http.MethodPost {
-		fmt.Printf("[DEBUG][matchEnded] rejected request: invalid method=%s\n", request.Method)
-		response.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	var matchEndedRequest struct {
-		ServerToken string `json:"serverToken"`
-	}
-	if err := json.NewDecoder(request.Body).Decode(&matchEndedRequest); err != nil {
-		fmt.Printf("[DEBUG][matchEnded] decode failed: %v\n", err)
-		response.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	if matchEndedRequest.ServerToken == "" {
-		fmt.Printf("[DEBUG][matchEnded] rejected request: missing serverToken\n")
-		response.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	mmDB, err := GetMMDB(request.Context())
-	if err != nil {
-		fmt.Printf("[DEBUG][matchEnded] GetMMDB failed: %v\n", err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	serverName, err := resolveServerNameFromToken(request.Context(), mmDB, matchEndedRequest.ServerToken)
-	if err != nil {
-		if errors.Is(err, errInvalidServerToken) {
-			fmt.Printf("[DEBUG][matchEnded] server token validation failed\n")
-			response.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		fmt.Printf("[DEBUG][matchEnded] server token lookup failed: %v\n", err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	fmt.Printf("[DEBUG][matchEnded] authenticated serverName=%s\n", serverName)
-
-	updatedTickets, updatedGames, err := markMatchEndedByServerName(request.Context(), mmDB, serverName)
-	if err != nil {
-		fmt.Printf("[DEBUG][matchEnded] markMatchEndedByServerName failed: %v\n", err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	api.mu.Lock()
-	for _, ticket := range api.tickets {
-		if ticket == nil {
-			continue
-		}
-		if ticket.instance != nil && ticket.instance.ContainerName == serverName {
-			ticket.status = "left"
-			ticket.instance = nil
-			ticket.error = ""
-		}
-	}
-	api.mu.Unlock()
-
-	fmt.Printf("[DEBUG][matchEnded] request succeeded serverName=%s updatedTickets=%d updatedGames=%d\n", serverName, updatedTickets, updatedGames)
-	response.Header().Set("Content-Type", "application/json")
-	response.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(response).Encode(map[string]any{
-		"status":         "not_queued",
-		"serverName":     serverName,
-		"updatedTickets": updatedTickets,
-		"updatedGames":   updatedGames,
-	})
-}
-
 func (api *MatchmakingAPI) handleHeartbeat(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][heartbeat] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][heartbeat] rejected request: invalid method=%s\n", request.Method)
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -781,10 +672,12 @@ func (api *MatchmakingAPI) handleHeartbeat(response http.ResponseWriter, request
 		SessionToken string `json:"sessionToken"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&heartbeatRequest); err != nil {
+		fmt.Printf("[DEBUG][heartbeat] decode failed: %v\n", err)
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	if heartbeatRequest.SessionToken == "" {
+		fmt.Printf("[DEBUG][heartbeat] rejected request: missing sessionToken\n")
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -795,9 +688,11 @@ func (api *MatchmakingAPI) handleHeartbeat(response http.ResponseWriter, request
 	queueContext, err := resolver(request.Context(), heartbeatRequest.SessionToken)
 	if err != nil {
 		if errors.Is(err, errInvalidSessionToken) {
+			fmt.Printf("[DEBUG][heartbeat] session validation failed: %v\n", err)
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		fmt.Printf("[DEBUG][heartbeat] queue context resolution failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -806,18 +701,22 @@ func (api *MatchmakingAPI) handleHeartbeat(response http.ResponseWriter, request
 	for _, member := range queueContext.Members {
 		memberIDs = append(memberIDs, member.PlayerID)
 	}
+	fmt.Printf("[DEBUG][heartbeat] updating heartbeat for party members partyId=%s memberCount=%d\n", queueContext.PartyID, len(memberIDs))
 
 	mmDB, err := GetMMDB(request.Context())
 	if err != nil {
+		fmt.Printf("[DEBUG][heartbeat] GetMMDB failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	updated, err := touchPlayersHeartbeat(request.Context(), mmDB, memberIDs)
 	if err != nil {
+		fmt.Printf("[DEBUG][heartbeat] touchPlayersHeartbeat failed memberCount=%d err=%v\n", len(memberIDs), err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	fmt.Printf("[DEBUG][heartbeat] successfully updated heartbeat memberCount=%d updatedCount=%d\n", len(memberIDs), updated)
 
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
@@ -830,18 +729,28 @@ func (api *MatchmakingAPI) handleHeartbeat(response http.ResponseWriter, request
 }
 
 func (api *MatchmakingAPI) handleCancel(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][cancel] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][cancel] rejected request: invalid method=%s\n", request.Method)
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 
 	ticketID := request.URL.Query().Get("ticketId")
+	if ticketID == "" {
+		fmt.Printf("[DEBUG][cancel] rejected request: missing ticketId\n")
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	fmt.Printf("[DEBUG][cancel] cancelling ticket ticketId=%s\n", ticketID)
 	api.mu.Lock()
 	if ticket, ok := api.tickets[ticketID]; ok {
 		ticket.status = "cancelled"
+		fmt.Printf("[DEBUG][cancel] marked ticket as cancelled ticketId=%s\n", ticketID)
 	}
 	api.waiting = removeTicket(api.waiting, ticketID)
 	api.mu.Unlock()
+	fmt.Printf("[DEBUG][cancel] ticket removed from waiting queue ticketId=%s\n", ticketID)
 
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
@@ -1695,24 +1604,6 @@ func deleteSeenInviteByID(ctx context.Context, mmDB *Database, inviteID string) 
 	return removed, nil
 }
 
-func generateServerToken() (string, string, error) {
-	tokenBytes := make([]byte, 32)
-	if _, err := cryptorand.Read(tokenBytes); err != nil {
-		return "", "", err
-	}
-
-	serverToken := hex.EncodeToString(tokenBytes)
-	hash := sha256.Sum256([]byte(serverToken))
-	return serverToken, hex.EncodeToString(hash[:]), nil
-}
-
-func persistServerToken(ctx context.Context, mmDB *Database, tokenID string, serverName string, tokenHash string) error {
-	query := `INSERT INTO server_tokens (token_id, server_name, token_hash, created_at, revoked)
-		VALUES ($1, $2, $3, $4, FALSE)`
-	_, err := submitExec(ctx, mmDB.DB, query, tokenID, serverName, tokenHash, time.Now().UTC())
-	return err
-}
-
 func (api *MatchmakingAPI) enqueueGroup(ctx context.Context, partyID string, members []QueueMember) (string, []string, map[string]string, error) {
 	if len(members) == 0 {
 		return "", nil, nil, fmt.Errorf("no players found for queue")
@@ -1918,42 +1809,6 @@ func removeTicket(queue []matchGroup, ticketID string) []matchGroup {
 }
 
 var errInvalidSessionToken = errors.New("invalid session token")
-var errInvalidServerToken = errors.New("invalid server token")
-
-func resolveServerNameFromToken(ctx context.Context, mmDB *Database, serverToken string) (string, error) {
-	if mmDB == nil || mmDB.DB == nil || serverToken == "" {
-		return "", errInvalidServerToken
-	}
-
-	hash := sha256.Sum256([]byte(serverToken))
-	tokenHash := hex.EncodeToString(hash[:])
-
-	rows, err := submitQuery(ctx, mmDB.DB, "SELECT server_name FROM server_tokens WHERE token_hash = $1 AND revoked = FALSE LIMIT 1", tokenHash)
-	if err != nil {
-		return "", err
-	}
-
-	serverName := ""
-	if rows.Next() {
-		if scanErr := rows.Scan(&serverName); scanErr != nil {
-			_ = rows.Close()
-			return "", scanErr
-		}
-	}
-	if closeErr := rows.Close(); closeErr != nil {
-		return "", closeErr
-	}
-
-	if serverName == "" {
-		return "", errInvalidServerToken
-	}
-
-	if _, err := submitExec(ctx, mmDB.DB, "UPDATE server_tokens SET last_used_at = $1 WHERE token_hash = $2", time.Now().UTC(), tokenHash); err != nil {
-		return "", err
-	}
-
-	return serverName, nil
-}
 
 func resolveQueueContextFromSession(ctx context.Context, sessionToken string) (QueueContext, error) {
 	if sessionToken == "" {
@@ -2368,10 +2223,10 @@ func persistMatchResult(ctx context.Context, mmDB *Database, instance GameInstan
 		gameID = "game-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 
-	gameInsert := `INSERT INTO games (game_id, ip_addr, port, status, created_at, server_name)
-		VALUES ($1, $2, $3, 'ready', $4, $5)
-		ON CONFLICT (game_id) DO UPDATE SET ip_addr = EXCLUDED.ip_addr, port = EXCLUDED.port, status = EXCLUDED.status, server_name = EXCLUDED.server_name`
-	if _, err := submitExec(ctx, mmDB.DB, gameInsert, gameID, instance.Host, instance.Port, time.Now().UTC(), instance.ContainerName); err != nil {
+	gameInsert := `INSERT INTO games (game_id, ip_addr, port, status, created_at)
+		VALUES ($1, $2, $3, 'ready', $4)
+		ON CONFLICT (game_id) DO UPDATE SET ip_addr = EXCLUDED.ip_addr, port = EXCLUDED.port, status = EXCLUDED.status`
+	if _, err := submitExec(ctx, mmDB.DB, gameInsert, gameID, instance.Host, instance.Port, time.Now().UTC()); err != nil {
 		return err
 	}
 
@@ -2506,111 +2361,6 @@ func touchPlayersHeartbeat(ctx context.Context, mmDB *Database, playerIDs []stri
 	}
 
 	return result.RowsAffected()
-}
-
-func markPlayersMatchEnded(ctx context.Context, mmDB *Database, playerIDs []string) (int64, int64, error) {
-	if mmDB == nil || mmDB.DB == nil || len(playerIDs) == 0 {
-		return 0, 0, nil
-	}
-
-	now := time.Now().UTC()
-
-	updateTicketsQuery := fmt.Sprintf(`WITH latest_active_tickets AS (
-		SELECT DISTINCT ON (player_id) ticket_id, game_id
-		FROM matchmaking_tickets
-		WHERE player_id IN (%s)
-			AND status IN ('matched', 'in_match')
-		ORDER BY player_id, queued_at DESC
-	)
-	UPDATE matchmaking_tickets mt
-	SET status = 'left', game_id = NULL, left_at = $1, last_heartbeat_at = $1
-	WHERE mt.ticket_id IN (SELECT ticket_id FROM latest_active_tickets)`, buildPlaceholderList(2, len(playerIDs)))
-
-	args := make([]any, 0, 1+len(playerIDs))
-	args = append(args, now)
-	for _, playerID := range playerIDs {
-		args = append(args, playerID)
-	}
-
-	ticketResult, err := submitExec(ctx, mmDB.DB, updateTicketsQuery, args...)
-	if err != nil {
-		return 0, 0, err
-	}
-	updatedTickets, err := ticketResult.RowsAffected()
-	if err != nil {
-		return 0, 0, err
-	}
-
-	updateGamesQuery := fmt.Sprintf(`WITH latest_active_tickets AS (
-		SELECT DISTINCT ON (player_id) game_id
-		FROM matchmaking_tickets
-		WHERE player_id IN (%s)
-			AND status IN ('matched', 'in_match')
-			AND game_id IS NOT NULL
-		ORDER BY player_id, queued_at DESC
-	), distinct_games AS (
-		SELECT DISTINCT game_id FROM latest_active_tickets
-	)
-	UPDATE games g
-	SET status = 'ended'
-	WHERE g.game_id IN (SELECT game_id FROM distinct_games)
-		AND g.status <> 'ended'`, buildPlaceholderList(1, len(playerIDs)))
-
-	gameArgs := make([]any, 0, len(playerIDs))
-	for _, playerID := range playerIDs {
-		gameArgs = append(gameArgs, playerID)
-	}
-
-	gameResult, err := submitExec(ctx, mmDB.DB, updateGamesQuery, gameArgs...)
-	if err != nil {
-		return 0, 0, err
-	}
-	updatedGames, err := gameResult.RowsAffected()
-	if err != nil {
-		return 0, 0, err
-	}
-
-	return updatedTickets, updatedGames, nil
-}
-
-func markMatchEndedByServerName(ctx context.Context, mmDB *Database, serverName string) (int64, int64, error) {
-	if mmDB == nil || mmDB.DB == nil || strings.TrimSpace(serverName) == "" {
-		return 0, 0, nil
-	}
-
-	now := time.Now().UTC()
-
-	updateTicketsQuery := `UPDATE matchmaking_tickets mt
-		SET status = 'left', game_id = NULL, left_at = $1, last_heartbeat_at = $1
-		WHERE mt.game_id IN (
-			SELECT game_id
-			FROM games
-			WHERE server_name = $2 AND status <> 'ended'
-		)
-		AND mt.status IN ('matched', 'in_match')`
-	ticketResult, err := submitExec(ctx, mmDB.DB, updateTicketsQuery, now, serverName)
-	if err != nil {
-		return 0, 0, err
-	}
-	updatedTickets, err := ticketResult.RowsAffected()
-	if err != nil {
-		return 0, 0, err
-	}
-
-	updateGamesQuery := `UPDATE games
-		SET status = 'ended'
-		WHERE server_name = $1
-			AND status <> 'ended'`
-	gameResult, err := submitExec(ctx, mmDB.DB, updateGamesQuery, serverName)
-	if err != nil {
-		return 0, 0, err
-	}
-	updatedGames, err := gameResult.RowsAffected()
-	if err != nil {
-		return 0, 0, err
-	}
-
-	return updatedTickets, updatedGames, nil
 }
 
 func buildPlaceholderList(start int, count int) string {
