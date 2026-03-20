@@ -12,10 +12,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// PlayerAPI provides endpoints for account management, character progression, and friend relationships.
 type PlayerAPI struct {
 	buildVersion string
 }
 
+// NewPlayerAPI creates a new PlayerAPI instance.
 func NewPlayerAPI(buildVersion string) *PlayerAPI {
 	return &PlayerAPI{buildVersion: buildVersion}
 }
@@ -35,6 +37,10 @@ func (api *PlayerAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/player/getCharacter", api.handleGetCharacter)
 }
 
+// handleLogin authenticates a player with username and password, returning a session token.
+// POST /player/login
+// Request: {"username": "string", "password": "string"}
+// Response: {"status": "ok", "message": "...", "sessionToken": "string", "issuedAt": "timestamp"}
 func (api *PlayerAPI) handleLogin(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][login] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
@@ -160,6 +166,10 @@ func createSessionToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
+// handleAccountInfo returns account information for an authenticated player.
+// POST /player/accountInfo
+// Request: {"playerId": "string", "sessionToken": "string"}
+// Response: {"accountId": "uuid", "displayName": "string", "region": "string", "version": "string"}
 func (api *PlayerAPI) handleAccountInfo(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][accountInfo] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
@@ -344,6 +354,10 @@ func (api *PlayerAPI) handleAccountInfo(response http.ResponseWriter, request *h
 	})
 }
 
+// handleFriendRequest sends a friend request to another player.
+// POST /player/friendRequest
+// Request: {"sessionToken": "string", "targetPlayerId": "string"}
+// Response: {"status": "ok", "message": "..."}
 func (api *PlayerAPI) handleFriendRequest(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][friendRequest] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
@@ -718,6 +732,10 @@ func (api *PlayerAPI) handleAcceptRejectFriendRequest(response http.ResponseWrit
 	})
 }
 
+// handleCharacters returns all characters for an authenticated player.
+// POST /player/characters
+// Request: {"sessionToken": "string"}
+// Response: {"characters": [{...}, ...]}
 func (api *PlayerAPI) handleCharacters(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		response.WriteHeader(http.StatusMethodNotAllowed)
@@ -831,8 +849,14 @@ func (api *PlayerAPI) handleCharacters(response http.ResponseWriter, request *ht
 	})
 }
 
+// handleSetActiveCharacter sets the active character for a player. Active character determines party faction.
+// POST /player/setActiveCharacter
+// Request: {"sessionToken": "string", "characterId": "string"}
+// Response: {"status": "ok", "message": "...", "characterId": "uuid", "faction": 0}
 func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][setActiveCharacter] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][setActiveCharacter] rejected request: invalid method=%s\n", request.Method)
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -843,6 +867,7 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 	}
 
 	if err := json.NewDecoder(request.Body).Decode(&setActiveCharacterRequest); err != nil {
+		fmt.Printf("[DEBUG][setActiveCharacter] decode failed: %v\n", err)
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -853,6 +878,7 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 	}
 
 	if setActiveCharacterRequest.SessionToken == "" || setActiveCharacterRequest.CharacterID == "" {
+		fmt.Printf("[DEBUG][setActiveCharacter] rejected request: missing fields sessionTokenSet=%t characterId=%s\n", setActiveCharacterRequest.SessionToken != "", setActiveCharacterRequest.CharacterID)
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -863,6 +889,7 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 
 	playerID, err := getPlayerIDFromSession(setActiveCharacterRequest.SessionToken)
 	if err != nil {
+		fmt.Printf("[DEBUG][setActiveCharacter] session validation failed characterId=%s err=%v\n", setActiveCharacterRequest.CharacterID, err)
 		response.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -871,9 +898,11 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 		})
 		return
 	}
+	fmt.Printf("[DEBUG][setActiveCharacter] session validated playerId=%s characterId=%s\n", playerID, setActiveCharacterRequest.CharacterID)
 
 	character, found, err := getCharacterByID(request.Context(), setActiveCharacterRequest.CharacterID)
 	if err != nil {
+		fmt.Printf("[DEBUG][setActiveCharacter] getCharacterByID failed playerId=%s characterId=%s err=%v\n", playerID, setActiveCharacterRequest.CharacterID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -883,6 +912,7 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 		return
 	}
 	if !found || character.PlayerID != playerID {
+		fmt.Printf("[DEBUG][setActiveCharacter] character not found or not owned playerId=%s characterId=%s found=%t ownerId=%s\n", playerID, setActiveCharacterRequest.CharacterID, found, character.PlayerID)
 		response.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -893,6 +923,7 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 
 	db, err := GetDatabase(context.Background())
 	if err != nil {
+		fmt.Printf("[DEBUG][setActiveCharacter] GetDatabase failed playerId=%s characterId=%s err=%v\n", playerID, character.ID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -906,6 +937,7 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 		VALUES ($1, $2, $3)
 		ON CONFLICT (player_id) DO UPDATE SET character_id = EXCLUDED.character_id, updated_at = EXCLUDED.updated_at`
 	if _, err := submitExec(context.Background(), db.DB, query, playerID, setActiveCharacterRequest.CharacterID, time.Now().UTC()); err != nil {
+		fmt.Printf("[DEBUG][setActiveCharacter] upsert active_characters failed playerId=%s characterId=%s err=%v\n", playerID, setActiveCharacterRequest.CharacterID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -914,8 +946,10 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 		})
 		return
 	}
+	fmt.Printf("[DEBUG][setActiveCharacter] active character persisted playerId=%s characterId=%s faction=%d\n", playerID, character.ID, character.Faction)
 
 	if err := syncPartyActiveCharacterSelection(request.Context(), playerID, character); err != nil {
+		fmt.Printf("[DEBUG][setActiveCharacter] syncPartyActiveCharacterSelection failed playerId=%s characterId=%s err=%v\n", playerID, character.ID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -924,6 +958,7 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 		})
 		return
 	}
+	fmt.Printf("[DEBUG][setActiveCharacter] request succeeded playerId=%s characterId=%s faction=%d\n", playerID, character.ID, character.Faction)
 
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
@@ -1029,8 +1064,14 @@ func (api *PlayerAPI) handleGetCharacter(response http.ResponseWriter, request *
 	})
 }
 
+// handleNewCharacter creates a new character for an authenticated player.
+// POST /player/newCharacter
+// Request: {"sessionToken": "string", "name": "string", "skinKey": "string", "weapon1": "string", ...}
+// Response: {"status": "ok", "message": "...", "characterId": "uuid"}
 func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *http.Request) {
+	fmt.Printf("[DEBUG][newCharacter] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
+		fmt.Printf("[DEBUG][newCharacter] rejected request: invalid method=%s\n", request.Method)
 		response.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -1051,6 +1092,7 @@ func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *
 
 	var newCharacterRequest NewCharacterRequest
 	if err := json.NewDecoder(request.Body).Decode(&newCharacterRequest); err != nil {
+		fmt.Printf("[DEBUG][newCharacter] decode failed: %v\n", err)
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -1061,9 +1103,11 @@ func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *
 	}
 
 	player_id := ""
+	fmt.Printf("[DEBUG][newCharacter] decoded request name=%s classType=%d faction=%d sessionTokenSet=%t\n", newCharacterRequest.Name, newCharacterRequest.ClassType, newCharacterRequest.Faction, newCharacterRequest.SessionToken != "")
 
 	db, err := GetDatabase(context.Background())
 	if err != nil {
+		fmt.Printf("[DEBUG][newCharacter] GetDatabase failed during session lookup err=%v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -1076,6 +1120,7 @@ func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *
 	query := "SELECT player_id FROM session_tokens WHERE session_token = $1 AND expiration > $2"
 	rows, err := submitQuery(context.Background(), db.DB, query, newCharacterRequest.SessionToken, time.Now().UTC())
 	if err != nil {
+		fmt.Printf("[DEBUG][newCharacter] session lookup failed err=%v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -1092,6 +1137,7 @@ func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *
 			return
 		}
 	} else {
+		fmt.Printf("[DEBUG][newCharacter] session validation failed sessionTokenSet=%t\n", newCharacterRequest.SessionToken != "")
 		response.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -1099,9 +1145,11 @@ func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *
 		})
 		return
 	}
+	fmt.Printf("[DEBUG][newCharacter] session validated playerId=%s\n", player_id)
 
 	id, err := createCharacterID()
 	if err != nil {
+		fmt.Printf("[DEBUG][newCharacter] createCharacterID failed playerId=%s err=%v\n", player_id, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -1114,6 +1162,7 @@ func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *
 	db, err = GetDatabase(context.Background())
 	if err != nil {
 		fmt.Printf("Error getting database: %v\n", err)
+		fmt.Printf("[DEBUG][newCharacter] GetDatabase failed during insert playerId=%s characterId=%s err=%v\n", player_id, id, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -1126,6 +1175,7 @@ func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *
 	query = "INSERT INTO characters (player_id, character_id, name, skin_key, weapon_1, weapon_2, weapon_3, equipment_1, equipment_2, class_type, faction) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
 	if _, err := submitExec(context.Background(), db.DB, query, player_id, id, newCharacterRequest.Name, newCharacterRequest.SkinKey, newCharacterRequest.Weapon1, newCharacterRequest.Weapon2, newCharacterRequest.Weapon3, newCharacterRequest.Equipment1, newCharacterRequest.Equipment2, newCharacterRequest.ClassType, newCharacterRequest.Faction); err != nil {
 		fmt.Printf("Error inserting character into database: %v\n", err)
+		fmt.Printf("[DEBUG][newCharacter] character insert failed playerId=%s characterId=%s name=%s faction=%d err=%v\n", player_id, id, newCharacterRequest.Name, newCharacterRequest.Faction, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -1134,6 +1184,7 @@ func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *
 		})
 		return
 	}
+	fmt.Printf("[DEBUG][newCharacter] request succeeded playerId=%s characterId=%s name=%s faction=%d\n", player_id, id, newCharacterRequest.Name, newCharacterRequest.Faction)
 
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)

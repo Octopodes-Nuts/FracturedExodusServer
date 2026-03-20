@@ -1,0 +1,1315 @@
+openapi: 3.0.0
+info:
+  title: Fractured Exodus Server API
+  description: Game server API for account management, matchmaking, and game coordination
+  version: 1.0.0
+  contact:
+    name: Fractured Exodus Team
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://api.fractured-exodus.com
+    description: Production server
+
+paths:
+  /health:
+    get:
+      summary: Server health check
+      operationId: getHealth
+      tags:
+        - Server
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /info:
+    get:
+      summary: Get server information
+      operationId: getInfo
+      tags:
+        - Server
+      responses:
+        '200':
+          description: Server information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service:
+                    type: string
+                    example: FracturedExodusServer
+                  startedAt:
+                    type: string
+                    format: date-time
+
+  /player/createAccount:
+    post:
+      summary: Create a new player account
+      operationId: createAccount
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - password
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '201':
+          description: Account created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/login:
+    post:
+      summary: Authenticate and get session token
+      operationId: login
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - password
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      sessionToken:
+                        type: string
+                      issuedAt:
+                        type: string
+                        format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/logout:
+    post:
+      summary: Logout and invalidate session
+      operationId: logout
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+              properties:
+                sessionToken:
+                  type: string
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /player/accountInfo:
+    post:
+      summary: Get authenticated player account info
+      operationId: getAccountInfo
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - playerId
+                - sessionToken
+              properties:
+                playerId:
+                  type: string
+                sessionToken:
+                  type: string
+      responses:
+        '200':
+          description: Account info retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountId:
+                    type: string
+                  displayName:
+                    type: string
+                  region:
+                    type: string
+                    enum: [NA, EU, APAC]
+                  version:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/characters:
+    post:
+      summary: Get all characters for authenticated player
+      operationId: getCharacters
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+              properties:
+                sessionToken:
+                  type: string
+      responses:
+        '200':
+          description: Characters retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  characters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Character'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/getCharacter:
+    post:
+      summary: Get a specific character by ID
+      operationId: getCharacter
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - characterId
+              properties:
+                sessionToken:
+                  type: string
+                characterId:
+                  type: string
+      responses:
+        '200':
+          description: Character retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Character'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/newCharacter:
+    post:
+      summary: Create a new character
+      operationId: createCharacter
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - name
+                - skinKey
+                - weapon1
+                - weapon2
+                - weapon3
+                - equipment1
+                - equipment2
+                - classType
+                - faction
+              properties:
+                sessionToken:
+                  type: string
+                name:
+                  type: string
+                skinKey:
+                  type: string
+                weapon1:
+                  type: string
+                weapon2:
+                  type: string
+                weapon3:
+                  type: string
+                equipment1:
+                  type: string
+                equipment2:
+                  type: string
+                devotionPoints:
+                  type: integer
+                  default: 0
+                classType:
+                  type: integer
+                faction:
+                  type: integer
+      responses:
+        '201':
+          description: Character created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      characterId:
+                        type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/updateCharacter:
+    post:
+      summary: Update a character
+      operationId: updateCharacter
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - characterId
+              properties:
+                sessionToken:
+                  type: string
+                characterId:
+                  type: string
+                name:
+                  type: string
+                weapon1:
+                  type: string
+                weapon2:
+                  type: string
+                weapon3:
+                  type: string
+                equipment1:
+                  type: string
+                equipment2:
+                  type: string
+      responses:
+        '200':
+          description: Character updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/deleteCharacter:
+    post:
+      summary: Delete a character
+      operationId: deleteCharacter
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - characterId
+              properties:
+                sessionToken:
+                  type: string
+                characterId:
+                  type: string
+      responses:
+        '200':
+          description: Character deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/setActiveCharacter:
+    post:
+      summary: Set active character (determines party faction)
+      operationId: setActiveCharacter
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - characterId
+              properties:
+                sessionToken:
+                  type: string
+                characterId:
+                  type: string
+      responses:
+        '200':
+          description: Active character set
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      characterId:
+                        type: string
+                      faction:
+                        type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/friendRequest:
+    post:
+      summary: Send a friend request
+      operationId: sendFriendRequest
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - targetPlayerId
+              properties:
+                sessionToken:
+                  type: string
+                targetPlayerId:
+                  type: string
+      responses:
+        '200':
+          description: Friend request sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /player/acceptRejectFriendRequest:
+    post:
+      summary: Accept or reject a friend request
+      operationId: respondFriendRequest
+      tags:
+        - Player
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - connectionId
+                - action
+              properties:
+                sessionToken:
+                  type: string
+                connectionId:
+                  type: string
+                action:
+                  type: string
+                  enum: [accept, reject]
+      responses:
+        '200':
+          description: Action processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /matchmaking/queue:
+    post:
+      summary: Join matchmaking queue
+      operationId: joinQueue
+      tags:
+        - Matchmaking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+              properties:
+                sessionToken:
+                  type: string
+      responses:
+        '202':
+          description: Successfully queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: queued
+                  partyId:
+                    type: string
+                  ticketId:
+                    type: string
+                  ticketIds:
+                    type: array
+                    items:
+                      type: string
+                  ticketAssignments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TicketAssignment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /matchmaking/status:
+    get:
+      summary: Get matchmaking ticket status (GET)
+      operationId: getTicketStatusGET
+      tags:
+        - Matchmaking
+      parameters:
+        - name: sessionToken
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: ticketId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ticket status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      summary: Get matchmaking ticket status (POST)
+      operationId: getTicketStatusPOST
+      tags:
+        - Matchmaking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - ticketId
+              properties:
+                sessionToken:
+                  type: string
+                ticketId:
+                  type: string
+      responses:
+        '200':
+          description: Ticket status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /matchmaking/join:
+    post:
+      summary: Join a matched game instance
+      operationId: joinInstance
+      tags:
+        - Matchmaking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - ticketId
+              properties:
+                ticketId:
+                  type: string
+      responses:
+        '200':
+          description: Successfully joined
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  instance:
+                    $ref: '#/components/schemas/GameInstance'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /matchmaking/cancel:
+    post:
+      summary: Cancel queue entry
+      operationId: cancelQueue
+      tags:
+        - Matchmaking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+              properties:
+                sessionToken:
+                  type: string
+      responses:
+        '200':
+          description: Ticket cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /matchmaking/heartbeat:
+    post:
+      summary: Send keepalive heartbeat
+      operationId: sendHeartbeat
+      tags:
+        - Matchmaking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+              properties:
+                sessionToken:
+                  type: string
+      responses:
+        '200':
+          description: Heartbeat received
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /matchmaking/joined:
+    post:
+      summary: Notify that player joined instance
+      operationId: notifyJoined
+      tags:
+        - Matchmaking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+              properties:
+                sessionToken:
+                  type: string
+      responses:
+        '200':
+          description: Joined acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /matchmaking/left:
+    post:
+      summary: Notify that player left instance
+      operationId: notifyLeft
+      tags:
+        - Matchmaking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+              properties:
+                sessionToken:
+                  type: string
+      responses:
+        '200':
+          description: Left acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /matchmaking/server/register:
+    post:
+      summary: Register game server instance
+      operationId: registerServer
+      tags:
+        - Matchmaking
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - serverName
+                - region
+                - port
+              properties:
+                serverName:
+                  type: string
+                region:
+                  type: string
+                  enum: [NA, EU, APAC]
+                port:
+                  type: string
+      responses:
+        '201':
+          description: Server registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  registrationKey:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /matchmaking/match/ended:
+    post:
+      summary: Notify match ended (game server only)
+      operationId: notifyMatchEnded
+      tags:
+        - Matchmaking
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - registrationKey
+                - instanceId
+                - winners
+                - losers
+              properties:
+                registrationKey:
+                  type: string
+                instanceId:
+                  type: string
+                winners:
+                  type: array
+                  items:
+                    type: string
+                losers:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Match end recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /matchmaking/party/invite:
+    post:
+      summary: Send party invite
+      operationId: inviteToParty
+      tags:
+        - Party
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - targetPlayerId
+              properties:
+                sessionToken:
+                  type: string
+                targetPlayerId:
+                  type: string
+      responses:
+        '200':
+          description: Invite sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /matchmaking/party/invites:
+    get:
+      summary: Get pending party invites
+      operationId: getPartyInvites
+      tags:
+        - Party
+      parameters:
+        - name: sessionToken
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Pending invites
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invites:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        inviteId:
+                          type: string
+                        fromPlayerId:
+                          type: string
+                        fromPlayerName:
+                          type: string
+                        sentAt:
+                          type: string
+                          format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /matchmaking/party/respond:
+    post:
+      summary: Accept or reject party invite
+      operationId: respondPartyInvite
+      tags:
+        - Party
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+                - inviteId
+                - action
+              properties:
+                sessionToken:
+                  type: string
+                inviteId:
+                  type: string
+                action:
+                  type: string
+                  enum: [accept, reject]
+      responses:
+        '200':
+          description: Action processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /matchmaking/party/leave:
+    post:
+      summary: Leave current party
+      operationId: leaveParty
+      tags:
+        - Party
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+              properties:
+                sessionToken:
+                  type: string
+      responses:
+        '200':
+          description: Left party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /matchmaking/party/status:
+    get:
+      summary: Get party status (GET)
+      operationId: getPartyStatusGET
+      tags:
+        - Party
+      parameters:
+        - name: sessionToken
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Party status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartyStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      summary: Get party status (POST)
+      operationId: getPartyStatusPOST
+      tags:
+        - Party
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionToken
+              properties:
+                sessionToken:
+                  type: string
+      responses:
+        '200':
+          description: Party status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartyStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /game/server/start:
+    post:
+      summary: Start game server instance
+      operationId: startGameServer
+      tags:
+        - GameServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - players
+                - port
+              properties:
+                players:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      displayName:
+                        type: string
+                port:
+                  type: string
+      responses:
+        '201':
+          description: Instance started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameInstance'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  schemas:
+    SuccessResponse:
+      type: object
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          example: ok
+        message:
+          type: string
+
+    Character:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        skinKey:
+          type: string
+        weapon1:
+          type: string
+        weapon2:
+          type: string
+        weapon3:
+          type: string
+        equipment1:
+          type: string
+        equipment2:
+          type: string
+        devotionPoints:
+          type: integer
+        classType:
+          type: integer
+        faction:
+          type: integer
+
+    GameInstance:
+      type: object
+      properties:
+        id:
+          type: string
+        address:
+          type: string
+        port:
+          type: string
+        joinKey:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    TicketAssignment:
+      type: object
+      properties:
+        playerId:
+          type: string
+        username:
+          type: string
+        ticketId:
+          type: string
+
+    TicketStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [searching, matched, error]
+        tickets:
+          type: array
+          items:
+            type: object
+            properties:
+              playerId:
+                type: string
+              username:
+                type: string
+              ticketId:
+                type: string
+              status:
+                type: string
+              partyId:
+                type: string
+              instance:
+                $ref: '#/components/schemas/GameInstance'
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              playerId:
+                type: string
+              username:
+                type: string
+
+    PartyStatus:
+      type: object
+      properties:
+        partyId:
+          type: string
+        leaderId:
+          type: string
+        leaderName:
+          type: string
+        partyFaction:
+          type: integer
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              playerId:
+                type: string
+              username:
+                type: string
+              characterId:
+                type: string
+              faction:
+                type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+        error:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    Unauthorized:
+      description: Unauthorized (invalid session token)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    Conflict:
+      description: Conflict (duplicate data or incompatible state)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  securitySchemes:
+    sessionToken:
+      type: apiKey
+      in: header
+      name: X-Session-Token
+
+security:
+  - sessionToken: []

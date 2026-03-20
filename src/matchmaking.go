@@ -65,6 +65,7 @@ type ticketStatus struct {
 	Error    string        `json:"error,omitempty"`
 }
 
+// MatchmakingAPI manages matchmaking queues, parties, and match creation.
 type MatchmakingAPI struct {
 	region              string
 	manager             MatchmakingManager
@@ -139,6 +140,10 @@ func (api *MatchmakingAPI) SetMatchStartWaitForTesting(wait time.Duration) {
 	api.mu.Unlock()
 }
 
+// handleQueue enqueues a player and their party for matchmaking.
+// POST /matchmaking/queue
+// Request: {"sessionToken": "string"}
+// Response: {"status": "queued", "partyId": "uuid", "ticketId": "string", ...}
 func (api *MatchmakingAPI) handleQueue(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][queue] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
@@ -212,6 +217,10 @@ func generateMatchmakingTicket() string {
 	return "ticket-" + uuid.String()
 }
 
+// handleJoin allows a player to join a matched game instance.
+// POST /matchmaking/join
+// Request: {"ticketId": "string"}
+// Response: {"status": "ok", "message": "...", "instance": {...}}
 func (api *MatchmakingAPI) handleJoin(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][join] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
@@ -342,6 +351,11 @@ func (api *MatchmakingAPI) handleRegisterServer(response http.ResponseWriter, re
 	})
 }
 
+// handleStatus retrieves the current status of a matchmaking ticket.
+// GET /matchmaking/status?sessionToken=X&ticketId=Y
+// POST /matchmaking/status
+// Request: {"sessionToken": "string", "ticketId": "string"}
+// Response: {"status": "searching|matched|error", "tickets": [...], "members": [...]}
 func (api *MatchmakingAPI) handleStatus(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][status] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodGet && request.Method != http.MethodPost {
@@ -913,6 +927,10 @@ func (api *MatchmakingAPI) handleCancel(response http.ResponseWriter, request *h
 	})
 }
 
+// handlePartyInvite sends a party invite to another player.
+// POST /matchmaking/party/invite
+// Request: {"sessionToken": "string", "targetPlayerId": "string"}
+// Response: {"status": "ok", "message": "..."}
 func (api *MatchmakingAPI) handlePartyInvite(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][partyInvite] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
@@ -1147,6 +1165,10 @@ func (api *MatchmakingAPI) handlePartyRespond(response http.ResponseWriter, requ
 	})
 }
 
+// handlePartyLeave removes a player from their current party.
+// POST /matchmaking/party/leave
+// Request: {"sessionToken": "string"}
+// Response: {"status": "ok", "message": "..."}
 func (api *MatchmakingAPI) handlePartyLeave(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][partyLeave] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost {
@@ -1288,6 +1310,11 @@ func (api *MatchmakingAPI) handlePartyInvites(response http.ResponseWriter, requ
 	})
 }
 
+// handlePartyStatus returns the current party status including members and faction.
+// GET /matchmaking/party/status?sessionToken=X
+// POST /matchmaking/party/status
+// Request: {"sessionToken": "string"}
+// Response: {"partyId": "uuid", "leaderId": "uuid", "partyFaction": 0, "members": [...]}
 func (api *MatchmakingAPI) handlePartyStatus(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][partyStatus] request received method=%s path=%s\n", request.Method, request.URL.Path)
 	if request.Method != http.MethodPost && request.Method != http.MethodGet {
@@ -1672,34 +1699,46 @@ func movePlayerToParty(ctx context.Context, mmDB *Database, playerID string, tar
 }
 
 func syncPartyActiveCharacterSelection(ctx context.Context, playerID string, character CharacterRecord) error {
+	fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] start playerId=%s characterId=%s faction=%d\n", playerID, character.ID, character.Faction)
 	mmDB, err := GetMMDB(ctx)
 	if err != nil {
+		fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] GetMMDB failed playerId=%s characterId=%s err=%v\n", playerID, character.ID, err)
 		return err
 	}
 
 	partyID, err := findPartyForPlayer(ctx, mmDB, playerID)
 	if err != nil {
+		fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] findPartyForPlayer failed playerId=%s characterId=%s err=%v\n", playerID, character.ID, err)
 		return err
 	}
 	if partyID == "" {
+		fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] no party found playerId=%s characterId=%s\n", playerID, character.ID)
 		return nil
 	}
+	fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] party resolved playerId=%s partyId=%s characterId=%s\n", playerID, partyID, character.ID)
 
 	if _, err := submitExec(ctx, mmDB.DB, "UPDATE party_players SET active_character_id = $1 WHERE party_id = $2 AND player_id = $3", character.ID, partyID, playerID); err != nil {
+		fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] update party_players failed playerId=%s partyId=%s characterId=%s err=%v\n", playerID, partyID, character.ID, err)
 		return err
 	}
+	fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] party player active character updated playerId=%s partyId=%s characterId=%s\n", playerID, partyID, character.ID)
 
 	primaryPlayerID, err := getPartyPrimaryPlayer(ctx, mmDB, partyID)
 	if err != nil {
+		fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] getPartyPrimaryPlayer failed playerId=%s partyId=%s err=%v\n", playerID, partyID, err)
 		return err
 	}
 	if primaryPlayerID != playerID {
+		fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] player is not primary playerId=%s primaryPlayerId=%s partyId=%s\n", playerID, primaryPlayerID, partyID)
 		return nil
 	}
+	fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] player is primary playerId=%s partyId=%s updating faction=%d\n", playerID, partyID, character.Faction)
 
 	if _, err := submitExec(ctx, mmDB.DB, "UPDATE parties SET active_faction = $1, faction = $1 WHERE party_id = $2", character.Faction, partyID); err != nil {
+		fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] update parties failed playerId=%s partyId=%s faction=%d err=%v\n", playerID, partyID, character.Faction, err)
 		return err
 	}
+	fmt.Printf("[DEBUG][syncPartyActiveCharacterSelection] request succeeded playerId=%s partyId=%s faction=%d\n", playerID, partyID, character.Faction)
 
 	return nil
 }
