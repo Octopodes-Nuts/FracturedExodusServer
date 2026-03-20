@@ -24,6 +24,11 @@ Character:
     Class Type: int
     Faction: int
 
+Active Character:
+    Player ID: string
+    Character ID: string
+    Updated At: DateTime
+
 Friend Connection:
     Connection ID: string
     Player One ID: string

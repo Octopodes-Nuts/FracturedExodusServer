@@ -372,3 +372,121 @@ func TestMatchmakingRegisterServerBadRequest(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, response.Code)
 	}
 }
+
+func TestPartyInviteAllowsDifferentFaction(t *testing.T) {
+	ctx := context.Background()
+
+	playerDB, err := server.GetDatabase(ctx)
+	if err != nil {
+		t.Fatalf("get player db: %v", err)
+	}
+	if err := server.InitDB(ctx, playerDB.DB); err != nil {
+		t.Fatalf("init player db: %v", err)
+	}
+
+	mmDB, err := server.GetMMDB(ctx)
+	if err != nil {
+		t.Fatalf("get mm db: %v", err)
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		err = server.InitMMDB(ctx, mmDB)
+		if err == nil {
+			break
+		}
+		if strings.Contains(err.Error(), "deadlock detected") {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		t.Fatalf("init mm db: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("init mm db after retries: %v", err)
+	}
+
+	uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	inviterID := "party-inviter-" + uniqueSuffix
+	inviteeID := "party-invitee-" + uniqueSuffix
+	inviterToken := "session-inviter-" + uniqueSuffix
+
+	if _, err := playerDB.DB.ExecContext(ctx,
+		"INSERT INTO players (id, password, account_name) VALUES ($1, $2, $3)",
+		inviterID,
+		"pw",
+		"inviter",
+	); err != nil {
+		t.Fatalf("insert inviter player: %v", err)
+	}
+	if _, err := playerDB.DB.ExecContext(ctx,
+		"INSERT INTO players (id, password, account_name) VALUES ($1, $2, $3)",
+		inviteeID,
+		"pw",
+		"invitee",
+	); err != nil {
+		t.Fatalf("insert invitee player: %v", err)
+	}
+
+	if _, err := playerDB.DB.ExecContext(ctx,
+		"INSERT INTO session_tokens (player_id, session_token, expiration) VALUES ($1, $2, $3)",
+		inviterID,
+		inviterToken,
+		time.Now().UTC().Add(30*time.Minute),
+	); err != nil {
+		t.Fatalf("insert inviter session: %v", err)
+	}
+
+	if _, err := playerDB.DB.ExecContext(ctx,
+		"INSERT INTO characters (character_id, player_id, name, skin_key, weapon_1, weapon_2, weapon_3, equipment_1, equipment_2, class_type, faction) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+		"char-inviter-"+uniqueSuffix,
+		inviterID,
+		"inviter-char",
+		"skin",
+		"w1",
+		"w2",
+		"w3",
+		"e1",
+		"e2",
+		0,
+		1,
+	); err != nil {
+		t.Fatalf("insert inviter character: %v", err)
+	}
+	if _, err := playerDB.DB.ExecContext(ctx,
+		"INSERT INTO characters (character_id, player_id, name, skin_key, weapon_1, weapon_2, weapon_3, equipment_1, equipment_2, class_type, faction) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+		"char-invitee-"+uniqueSuffix,
+		inviteeID,
+		"invitee-char",
+		"skin",
+		"w1",
+		"w2",
+		"w3",
+		"e1",
+		"e2",
+		0,
+		2,
+	); err != nil {
+		t.Fatalf("insert invitee character: %v", err)
+	}
+
+	manager := &fakeMatchmakingManager{}
+	api := server.NewMatchmakingAPI("NA", manager)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	inviteBody := fmt.Sprintf(`{"sessionToken":"%s","playerId":"%s"}`, inviterToken, inviteeID)
+	inviteRequest := httptest.NewRequest(http.MethodPost, "/matchmaking/party/invite", strings.NewReader(inviteBody))
+	inviteResponse := httptest.NewRecorder()
+	mux.ServeHTTP(inviteResponse, inviteRequest)
+
+	if inviteResponse.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, inviteResponse.Code)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(inviteResponse.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode invite response: %v", err)
+	}
+
+	if payload["status"] != "ok" {
+		t.Fatalf("expected ok status, got %v", payload["status"])
+	}
+}

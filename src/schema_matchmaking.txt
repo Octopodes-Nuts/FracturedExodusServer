@@ -32,6 +32,7 @@ Game Player:
 Party:
     Party ID: string
     Active Faction: int
+    Faction: int
     Primary Player ID: string
 
 PartyPlayer:

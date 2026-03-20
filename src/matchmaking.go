@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -278,8 +277,7 @@ func (api *MatchmakingAPI) handleRegisterServer(response http.ResponseWriter, re
 	}
 
 	var registerRequest struct {
-		ServerName      string `json:"serverName"`
-		RegistrationKey string `json:"registrationKey"`
+		ServerName string `json:"serverName"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&registerRequest); err != nil {
 		fmt.Printf("[DEBUG][registerServer] decode failed: %v\n", err)
@@ -287,40 +285,32 @@ func (api *MatchmakingAPI) handleRegisterServer(response http.ResponseWriter, re
 		return
 	}
 
-	if registerRequest.ServerName == "" || registerRequest.RegistrationKey == "" {
-		fmt.Printf("[DEBUG][registerServer] rejected request: missing fields serverName=%q registrationKeySet=%t\n", registerRequest.ServerName, registerRequest.RegistrationKey != "")
+	if registerRequest.ServerName == "" {
+		fmt.Printf("[DEBUG][registerServer] rejected request: missing serverName\n")
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
-			"message": "serverName and registrationKey are required",
+			"message": "serverName is required",
 		})
 		return
 	}
 
-	expectedRegistrationKey := os.Getenv("MM_SERVER_REGISTRATION_KEY")
-	if expectedRegistrationKey == "" {
-		fmt.Printf("[DEBUG][registerServer] rejected request: MM_SERVER_REGISTRATION_KEY is not configured\n")
-		response.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":  "error",
-			"message": "server registration is disabled",
-		})
-		return
-	}
-
-	if registerRequest.RegistrationKey != expectedRegistrationKey {
-		fmt.Printf("[DEBUG][registerServer] rejected request: invalid registration key for serverName=%s\n", registerRequest.ServerName)
-		response.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":  "error",
-			"message": "invalid registration key",
-		})
+	registrationKey, registrationKeyHash, err := generateServerToken()
+	if err != nil {
+		fmt.Printf("[DEBUG][registerServer] generateRegistrationKey failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	mmDB, err := GetMMDB(request.Context())
 	if err != nil {
 		fmt.Printf("[DEBUG][registerServer] GetMMDB failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if err := persistRegistrationKey(request.Context(), mmDB, registerRequest.ServerName, registrationKeyHash); err != nil {
+		fmt.Printf("[DEBUG][registerServer] persistRegistrationKey failed serverName=%s err=%v\n", registerRequest.ServerName, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -339,15 +329,16 @@ func (api *MatchmakingAPI) handleRegisterServer(response http.ResponseWriter, re
 		return
 	}
 
-	fmt.Printf("[DEBUG][registerServer] server token registered tokenId=%s serverName=%s\n", tokenID, registerRequest.ServerName)
+	fmt.Printf("[DEBUG][registerServer] server registered serverName=%s\n", registerRequest.ServerName)
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{
-		"status":      "ok",
-		"tokenId":     tokenID,
-		"serverName":  registerRequest.ServerName,
-		"serverToken": serverToken,
-		"issuedAt":    time.Now().UTC().Format(time.RFC3339),
+		"status":          "ok",
+		"tokenId":         tokenID,
+		"serverName":      registerRequest.ServerName,
+		"serverToken":     serverToken,
+		"registrationKey": registrationKey,
+		"issuedAt":        time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -1437,6 +1428,13 @@ func (api *MatchmakingAPI) handlePartyStatus(response http.ResponseWriter, reque
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
+	partyFaction, err := getPartyFaction(request.Context(), mmDB, partyID)
+	if err != nil {
+		fmt.Printf("[DEBUG][partyStatus] getPartyFaction failed partyId=%s err=%v\n", partyID, err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	fmt.Printf("[DEBUG][partyStatus] request succeeded playerId=%s partyId=%s members=%d inbound=%d outbound=%d\n", playerID, partyID, len(memberPayload), len(inbound), len(outbound))
 
 	response.Header().Set("Content-Type", "application/json")
@@ -1445,6 +1443,7 @@ func (api *MatchmakingAPI) handlePartyStatus(response http.ResponseWriter, reque
 		"status":          "ok",
 		"inParty":         true,
 		"partyId":         partyID,
+		"partyFaction":    partyFaction,
 		"playerId":        playerID,
 		"primaryPlayerId": primaryPlayerID,
 		"members":         memberPayload,
@@ -1493,13 +1492,28 @@ func ensurePlayerParty(ctx context.Context, mmDB *Database, playerID string) (st
 	}
 
 	partyID = "party-" + uuid.NewString()
-	createPartyQuery := "INSERT INTO parties (party_id, active_faction, primary_player_id) VALUES ($1, $2, $3)"
-	if _, err := submitExec(ctx, mmDB.DB, createPartyQuery, partyID, 0, playerID); err != nil {
+	activeCharacterID := any(nil)
+	activeCharacter, found, err := getActiveCharacterForPlayer(ctx, playerID)
+	if err != nil {
 		return "", err
 	}
 
-	insertMemberQuery := "INSERT INTO party_players (party_id, player_id, active_character_id) VALUES ($1, $2, NULL)"
-	if _, err := submitExec(ctx, mmDB.DB, insertMemberQuery, partyID, playerID); err != nil {
+	playerFaction, err := getPlayerFaction(ctx, playerID)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		playerFaction = activeCharacter.Faction
+		activeCharacterID = activeCharacter.ID
+	}
+
+	createPartyQuery := "INSERT INTO parties (party_id, active_faction, faction, primary_player_id) VALUES ($1, $2, $3, $4)"
+	if _, err := submitExec(ctx, mmDB.DB, createPartyQuery, partyID, playerFaction, playerFaction, playerID); err != nil {
+		return "", err
+	}
+
+	insertMemberQuery := "INSERT INTO party_players (party_id, player_id, active_character_id) VALUES ($1, $2, $3)"
+	if _, err := submitExec(ctx, mmDB.DB, insertMemberQuery, partyID, playerID, activeCharacterID); err != nil {
 		return "", err
 	}
 
@@ -1540,6 +1554,57 @@ func hasPendingInvite(ctx context.Context, mmDB *Database, partyID string, toPla
 	defer rows.Close()
 
 	return rows.Next(), nil
+}
+
+func getPartyFaction(ctx context.Context, mmDB *Database, partyID string) (int, error) {
+	rows, err := submitQuery(ctx, mmDB.DB, "SELECT faction FROM parties WHERE party_id = $1 LIMIT 1", partyID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return 0, fmt.Errorf("party not found")
+	}
+
+	var faction int
+	if err := rows.Scan(&faction); err != nil {
+		return 0, err
+	}
+
+	return faction, nil
+}
+
+func getPlayerFaction(ctx context.Context, playerID string) (int, error) {
+	activeCharacter, found, err := getActiveCharacterForPlayer(ctx, playerID)
+	if err != nil {
+		return 0, err
+	}
+	if found {
+		return activeCharacter.Faction, nil
+	}
+
+	playerDB, err := GetDatabase(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	rows, err := submitQuery(ctx, playerDB.DB, "SELECT faction FROM characters WHERE player_id = $1 ORDER BY character_id LIMIT 1", playerID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return 0, nil
+	}
+
+	var faction int
+	if err := rows.Scan(&faction); err != nil {
+		return 0, err
+	}
+
+	return faction, nil
 }
 
 func getPendingInviteForPlayer(ctx context.Context, mmDB *Database, inviteID string, toPlayerID string) (pendingInvite, bool, error) {
@@ -1589,8 +1654,50 @@ func movePlayerToParty(ctx context.Context, mmDB *Database, playerID string, tar
 		}
 	}
 
-	insertMemberQuery := "INSERT INTO party_players (party_id, player_id, active_character_id) VALUES ($1, $2, NULL) ON CONFLICT DO NOTHING"
-	if _, err := submitExec(ctx, mmDB.DB, insertMemberQuery, targetPartyID, playerID); err != nil {
+	activeCharacterID := any(nil)
+	activeCharacter, found, err := getActiveCharacterForPlayer(ctx, playerID)
+	if err != nil {
+		return err
+	}
+	if found {
+		activeCharacterID = activeCharacter.ID
+	}
+
+	insertMemberQuery := "INSERT INTO party_players (party_id, player_id, active_character_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING"
+	if _, err := submitExec(ctx, mmDB.DB, insertMemberQuery, targetPartyID, playerID, activeCharacterID); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func syncPartyActiveCharacterSelection(ctx context.Context, playerID string, character CharacterRecord) error {
+	mmDB, err := GetMMDB(ctx)
+	if err != nil {
+		return err
+	}
+
+	partyID, err := findPartyForPlayer(ctx, mmDB, playerID)
+	if err != nil {
+		return err
+	}
+	if partyID == "" {
+		return nil
+	}
+
+	if _, err := submitExec(ctx, mmDB.DB, "UPDATE party_players SET active_character_id = $1 WHERE party_id = $2 AND player_id = $3", character.ID, partyID, playerID); err != nil {
+		return err
+	}
+
+	primaryPlayerID, err := getPartyPrimaryPlayer(ctx, mmDB, partyID)
+	if err != nil {
+		return err
+	}
+	if primaryPlayerID != playerID {
+		return nil
+	}
+
+	if _, err := submitExec(ctx, mmDB.DB, "UPDATE parties SET active_faction = $1, faction = $1 WHERE party_id = $2", character.Faction, partyID); err != nil {
 		return err
 	}
 
@@ -1781,6 +1888,14 @@ func persistServerToken(ctx context.Context, mmDB *Database, tokenID string, ser
 	query := `INSERT INTO server_tokens (token_id, server_name, token_hash, created_at, revoked)
 		VALUES ($1, $2, $3, $4, FALSE)`
 	_, err := submitExec(ctx, mmDB.DB, query, tokenID, serverName, tokenHash, time.Now().UTC())
+	return err
+}
+
+func persistRegistrationKey(ctx context.Context, mmDB *Database, serverName string, registrationKeyHash string) error {
+	query := `INSERT INTO server_registration_keys (server_name, registration_key_hash, created_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (server_name) DO UPDATE SET registration_key_hash = EXCLUDED.registration_key_hash, created_at = EXCLUDED.created_at`
+	_, err := submitExec(ctx, mmDB.DB, query, serverName, registrationKeyHash, time.Now().UTC())
 	return err
 }
 

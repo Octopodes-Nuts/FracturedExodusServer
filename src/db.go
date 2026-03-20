@@ -55,6 +55,11 @@ var initStatements = []string{
 		class_type INTEGER NOT NULL DEFAULT 0,
 		faction INTEGER NOT NULL DEFAULT 0
 	);`,
+	`CREATE TABLE IF NOT EXISTS active_characters (
+		player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
+		character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);`,
 	`CREATE TABLE IF NOT EXISTS friend_connections (
 		connection_id TEXT PRIMARY KEY,
 		player_one_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
@@ -69,6 +74,7 @@ var initStatements = []string{
 
 var resetStatements = []string{
 	`DROP TABLE IF EXISTS friend_connections CASCADE;`,
+	`DROP TABLE IF EXISTS active_characters CASCADE;`,
 	`DROP TABLE IF EXISTS characters CASCADE;`,
 	`DROP TABLE IF EXISTS session_tokens CASCADE;`,
 	`DROP TABLE IF EXISTS players CASCADE;`,

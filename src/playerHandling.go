@@ -24,6 +24,7 @@ func (api *PlayerAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/player/login", api.handleLogin)
 	mux.HandleFunc("/player/accountInfo", api.handleAccountInfo)
 	mux.HandleFunc("/player/characters", api.handleCharacters)
+	mux.HandleFunc("/player/setActiveCharacter", api.handleSetActiveCharacter)
 	mux.HandleFunc("/player/friendRequest", api.handleFriendRequest)
 	mux.HandleFunc("/player/acceptRejectFriendRequest", api.handleAcceptRejectFriendRequest)
 	mux.HandleFunc("/player/createAccount", handleCreateAccount)
@@ -827,6 +828,111 @@ func (api *PlayerAPI) handleCharacters(response http.ResponseWriter, request *ht
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{
 		"characters": characters,
+	})
+}
+
+func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		response.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var setActiveCharacterRequest struct {
+		SessionToken string `json:"sessionToken"`
+		CharacterID  string `json:"characterId"`
+	}
+
+	if err := json.NewDecoder(request.Body).Decode(&setActiveCharacterRequest); err != nil {
+		response.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "invalid request body",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	if setActiveCharacterRequest.SessionToken == "" || setActiveCharacterRequest.CharacterID == "" {
+		response.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "sessionToken and characterId are required",
+		})
+		return
+	}
+
+	playerID, err := getPlayerIDFromSession(setActiveCharacterRequest.SessionToken)
+	if err != nil {
+		response.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "invalid session token",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	character, found, err := getCharacterByID(request.Context(), setActiveCharacterRequest.CharacterID)
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database query failed",
+			"error":   err.Error(),
+		})
+		return
+	}
+	if !found || character.PlayerID != playerID {
+		response.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "character not found",
+		})
+		return
+	}
+
+	db, err := GetDatabase(context.Background())
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database error",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	query := `INSERT INTO active_characters (player_id, character_id, updated_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (player_id) DO UPDATE SET character_id = EXCLUDED.character_id, updated_at = EXCLUDED.updated_at`
+	if _, err := submitExec(context.Background(), db.DB, query, playerID, setActiveCharacterRequest.CharacterID, time.Now().UTC()); err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database error",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	if err := syncPartyActiveCharacterSelection(request.Context(), playerID, character); err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "failed to sync party active character",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(response).Encode(map[string]any{
+		"status":      "ok",
+		"playerId":    playerID,
+		"characterId": character.ID,
+		"faction":     character.Faction,
+		"message":     "active character updated",
 	})
 }
 

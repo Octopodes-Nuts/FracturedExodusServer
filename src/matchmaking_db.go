@@ -44,8 +44,10 @@ var initMMDBStatements = []string{
 	`CREATE TABLE IF NOT EXISTS parties (
 		party_id TEXT PRIMARY KEY,
 		active_faction INTEGER NOT NULL DEFAULT 0,
+		faction INTEGER NOT NULL DEFAULT 0,
 		primary_player_id TEXT NOT NULL
 	);`,
+	`ALTER TABLE parties ADD COLUMN IF NOT EXISTS faction INTEGER NOT NULL DEFAULT 0;`,
 	`CREATE TABLE IF NOT EXISTS party_players (
 		party_id TEXT NOT NULL REFERENCES parties(party_id) ON DELETE CASCADE,
 		player_id TEXT NOT NULL,
@@ -65,9 +67,15 @@ var initMMDBStatements = []string{
 		last_used_at TIMESTAMPTZ,
 		revoked BOOLEAN NOT NULL DEFAULT FALSE
 	);`,
+	`CREATE TABLE IF NOT EXISTS server_registration_keys (
+		server_name TEXT PRIMARY KEY,
+		registration_key_hash TEXT NOT NULL UNIQUE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);`,
 }
 
 var resetMMDBStatements = []string{
+	`DROP TABLE IF EXISTS server_registration_keys CASCADE;`,
 	`DROP TABLE IF EXISTS server_tokens CASCADE;`,
 	`DROP TABLE IF EXISTS game_players CASCADE;`,
 	`DROP TABLE IF EXISTS party_players CASCADE;`,
