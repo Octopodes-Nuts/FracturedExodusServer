@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	defaultMatchSize      = 12
-	defaultMatchStartWait = 30 * time.Second
-	// defaultMatchStartWait = 1 * time.Second
+	defaultMatchSize = 12
+	// defaultMatchStartWait = 30 * time.Second
+	defaultMatchStartWait = 1 * time.Second
 )
 
 type matchTicket struct {
