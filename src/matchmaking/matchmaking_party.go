@@ -146,6 +146,14 @@ func (api *MatchmakingAPI) handlePartyInvite(response http.ResponseWriter, reque
 		return
 	}
 
+	if _, err := server.SubmitExec(request.Context(), mmDB.DB,
+		"DELETE FROM party_invites WHERE party_id = $1 AND to_player_id = $2 AND status = 'pending' AND expires_at <= $3",
+		partyID, inviteRequest.PlayerID, time.Now().UTC()); err != nil {
+		fmt.Printf("[DEBUG][partyInvite] delete expired invite failed partyId=%s targetPlayerId=%s err=%v\n", partyID, inviteRequest.PlayerID, err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	inviteID := "invite-" + uuid.NewString()
 	now := time.Now().UTC()
 	expiresAt := now.Add(5 * time.Minute)

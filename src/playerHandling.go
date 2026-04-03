@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -145,9 +146,21 @@ func (api *PlayerAPI) handleLogin(response http.ResponseWriter, request *http.Re
 		return
 	}
 
+	friendCode, err := ensureFriendCode(context.Background(), db, id)
+	if err != nil {
+		fmt.Printf("[DEBUG][login] ensureFriendCode failed accountId=%s err=%v\n", id, err)
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "failed to assign friend code",
+			"error":   err.Error(),
+		})
+		return
+	}
+
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
-	fmt.Printf("[DEBUG][login] request succeeded accountId=%s\n", id)
+	fmt.Printf("[DEBUG][login] request succeeded accountId=%s friendCode=%s\n", id, friendCode)
 
 	_ = json.NewEncoder(response).Encode(map[string]any{
 		"status":       "ok",
@@ -155,6 +168,7 @@ func (api *PlayerAPI) handleLogin(response http.ResponseWriter, request *http.Re
 		"issuedAt":     time.Now().UTC().Format(time.RFC3339),
 		"accountId":    id,
 		"sessionToken": sessionToken,
+		"friendCode":   friendCode,
 	})
 }
 
@@ -164,6 +178,99 @@ func createSessionToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+const friendCodeAlphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+func generateFriendCodeSuffix() (string, error) {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	result := make([]byte, 4)
+	for i, v := range b {
+		result[i] = friendCodeAlphabet[int(v)%len(friendCodeAlphabet)]
+	}
+	return string(result), nil
+}
+
+// ensureFriendCode returns the player's friend code (username#XXXX), creating the suffix if needed.
+func ensureFriendCode(ctx context.Context, db *Database, playerID string) (string, error) {
+	rows, err := submitQuery(ctx, db.DB, "SELECT account_name, COALESCE(friend_code_suffix, '') FROM players WHERE id = $1", playerID)
+	if err != nil {
+		return "", err
+	}
+	var accountName, suffix string
+	if rows.Next() {
+		if scanErr := rows.Scan(&accountName, &suffix); scanErr != nil {
+			_ = rows.Close()
+			return "", scanErr
+		}
+	}
+	if closeErr := rows.Close(); closeErr != nil {
+		return "", closeErr
+	}
+
+	if suffix != "" {
+		return accountName + "#" + suffix, nil
+	}
+
+	for range 10 {
+		newSuffix, err := generateFriendCodeSuffix()
+		if err != nil {
+			return "", err
+		}
+		result, err := submitExec(ctx, db.DB,
+			"UPDATE players SET friend_code_suffix = $1 WHERE id = $2 AND friend_code_suffix IS NULL",
+			newSuffix, playerID)
+		if err != nil {
+			// likely unique constraint collision — retry
+			continue
+		}
+		affected, _ := result.RowsAffected()
+		if affected == 1 {
+			return accountName + "#" + newSuffix, nil
+		}
+		// 0 rows: concurrent update already set it — re-read
+		rows, err = submitQuery(ctx, db.DB, "SELECT COALESCE(friend_code_suffix, '') FROM players WHERE id = $1", playerID)
+		if err != nil {
+			return "", err
+		}
+		if rows.Next() {
+			_ = rows.Scan(&suffix)
+		}
+		_ = rows.Close()
+		if suffix != "" {
+			return accountName + "#" + suffix, nil
+		}
+	}
+	return "", fmt.Errorf("failed to assign friend code after multiple attempts")
+}
+
+// lookupPlayerByFriendCode resolves a friend code (username#XXXX) to a player ID.
+// Returns ("", nil) if not found.
+func lookupPlayerByFriendCode(ctx context.Context, db *Database, friendCode string) (string, error) {
+	idx := strings.LastIndex(friendCode, "#")
+	if idx < 0 || idx == len(friendCode)-1 {
+		return "", nil
+	}
+	username := friendCode[:idx]
+	suffix := friendCode[idx+1:]
+	rows, err := submitQuery(ctx, db.DB,
+		"SELECT id FROM players WHERE account_name = $1 AND friend_code_suffix = $2 LIMIT 1",
+		username, suffix)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return "", nil
+	}
+	var playerID string
+	if err := rows.Scan(&playerID); err != nil {
+		return "", err
+	}
+	return playerID, nil
 }
 
 // handleAccountInfo returns account information for an authenticated player.
@@ -266,7 +373,9 @@ func (api *PlayerAPI) handleAccountInfo(response http.ResponseWriter, request *h
 	}
 	fmt.Printf("[DEBUG][accountInfo] account stats loaded level=%d experience=%d\n", accountLevel, experience)
 
-	query = "SELECT player_two_id FROM friend_connections WHERE player_one_id = $1 AND status = 'accepted' UNION SELECT player_one_id FROM friend_connections WHERE player_two_id = $1 AND status = 'accepted'"
+	query = `SELECT p.id, p.account_name FROM friend_connections fc
+		JOIN players p ON p.id = CASE WHEN fc.player_one_id = $1 THEN fc.player_two_id ELSE fc.player_one_id END
+		WHERE (fc.player_one_id = $1 OR fc.player_two_id = $1) AND fc.status = 'accepted'`
 	fmt.Printf("[DEBUG][accountInfo] querying accepted friends for playerId=%s\n", accountInfoRequest.PlayerID)
 	rows, err = submitQuery(context.Background(), db.DB, query, accountInfoRequest.PlayerID)
 	if err != nil {
@@ -280,14 +389,14 @@ func (api *PlayerAPI) handleAccountInfo(response http.ResponseWriter, request *h
 		return
 	}
 	defer rows.Close()
-	friends := []string{}
+	friends := []map[string]string{}
 	for rows.Next() {
-		var friendID string
-		if err := rows.Scan(&friendID); err != nil {
+		var friendID, friendUsername string
+		if err := rows.Scan(&friendID, &friendUsername); err != nil {
 			fmt.Printf("[DEBUG][accountInfo] failed scanning accepted friend row: %v\n", err)
 			return
 		}
-		friends = append(friends, friendID)
+		friends = append(friends, map[string]string{"accountId": friendID, "username": friendUsername})
 	}
 	fmt.Printf("[DEBUG][accountInfo] accepted friends count=%d\n", len(friends))
 
@@ -356,7 +465,7 @@ func (api *PlayerAPI) handleAccountInfo(response http.ResponseWriter, request *h
 
 // handleFriendRequest sends a friend request to another player.
 // POST /player/friendRequest
-// Request: {"sessionToken": "string", "targetPlayerId": "string"}
+// Request: {"sessionToken": "string", "playerId": "string"} OR {"sessionToken": "string", "friendCode": "username#XXXX"}
 // Response: {"status": "ok", "message": "..."}
 func (api *PlayerAPI) handleFriendRequest(response http.ResponseWriter, request *http.Request) {
 	fmt.Printf("[DEBUG][friendRequest] request received method=%s path=%s\n", request.Method, request.URL.Path)
@@ -369,6 +478,7 @@ func (api *PlayerAPI) handleFriendRequest(response http.ResponseWriter, request 
 	type FriendRequest struct {
 		SessionToken string `json:"sessionToken"`
 		PlayerID     string `json:"playerId"`
+		FriendCode   string `json:"friendCode"`
 	}
 
 	var friendRequest FriendRequest
@@ -383,12 +493,12 @@ func (api *PlayerAPI) handleFriendRequest(response http.ResponseWriter, request 
 		return
 	}
 
-	if friendRequest.SessionToken == "" || friendRequest.PlayerID == "" {
-		fmt.Printf("[DEBUG][friendRequest] rejected request: missing fields sessionTokenSet=%t playerId=%s\n", friendRequest.SessionToken != "", friendRequest.PlayerID)
+	if friendRequest.SessionToken == "" || (friendRequest.PlayerID == "" && friendRequest.FriendCode == "") {
+		fmt.Printf("[DEBUG][friendRequest] rejected request: missing fields sessionTokenSet=%t playerId=%s friendCode=%s\n", friendRequest.SessionToken != "", friendRequest.PlayerID, friendRequest.FriendCode)
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
-			"message": "sessionToken and playerId are required",
+			"message": "sessionToken and one of playerId or friendCode are required",
 		})
 		return
 	}
@@ -404,6 +514,42 @@ func (api *PlayerAPI) handleFriendRequest(response http.ResponseWriter, request 
 		})
 		return
 	}
+
+	if friendRequest.FriendCode != "" {
+		db, err := GetDatabase(context.Background())
+		if err != nil {
+			fmt.Printf("[DEBUG][friendRequest] GetDatabase failed resolving friendCode: %v\n", err)
+			response.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"status":  "error",
+				"message": "database error",
+				"error":   err.Error(),
+			})
+			return
+		}
+		resolved, err := lookupPlayerByFriendCode(context.Background(), db, friendRequest.FriendCode)
+		if err != nil {
+			fmt.Printf("[DEBUG][friendRequest] friendCode lookup failed friendCode=%s err=%v\n", friendRequest.FriendCode, err)
+			response.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"status":  "error",
+				"message": "database error",
+				"error":   err.Error(),
+			})
+			return
+		}
+		if resolved == "" {
+			fmt.Printf("[DEBUG][friendRequest] friendCode not found friendCode=%s\n", friendRequest.FriendCode)
+			response.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"status":  "error",
+				"message": "player not found",
+			})
+			return
+		}
+		friendRequest.PlayerID = resolved
+	}
+
 	fmt.Printf("[DEBUG][friendRequest] session validated senderId=%s targetId=%s\n", senderID, friendRequest.PlayerID)
 
 	if senderID == friendRequest.PlayerID {

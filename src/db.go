@@ -60,6 +60,7 @@ var initStatements = []string{
 		character_id TEXT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);`,
+	`ALTER TABLE players ADD COLUMN IF NOT EXISTS friend_code_suffix TEXT UNIQUE;`,
 	`CREATE TABLE IF NOT EXISTS friend_connections (
 		connection_id TEXT PRIMARY KEY,
 		player_one_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
