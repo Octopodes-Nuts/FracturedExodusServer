@@ -26,6 +26,11 @@ func validateSessionToken(sessionToken string) error {
 	return fmt.Errorf("invalid session token")
 }
 
+// GetPlayerIDFromSession is an exported wrapper for use by sub-packages.
+func GetPlayerIDFromSession(sessionToken string) (string, error) {
+	return getPlayerIDFromSession(sessionToken)
+}
+
 func getPlayerIDFromSession(sessionToken string) (string, error) {
 	db, err := GetDatabase(context.Background())
 	if err != nil {

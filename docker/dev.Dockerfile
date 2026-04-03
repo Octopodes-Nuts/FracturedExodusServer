@@ -8,6 +8,9 @@ ARG SERVER_PORT=8080
 ENV GODOT_GAME_BINARY="FracturedExodus.x86_64"
 ENV GODOT_GAME_PCK="FracturedExodus.pck"
 
+# Setup Host Gateway IP
+ENV HOST_GATEWAY_IP=host.docker.internal
+
 # System dependencies needed by Godot
 RUN dnf update -y && dnf install -y wget unzip wayland-devel fontconfig libXcursor openssl openssl-libs libXinerama libXrandr-devel libXi alsa-lib pulseaudio-libs mesa-libGL
 

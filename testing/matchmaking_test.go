@@ -12,6 +12,7 @@ import (
 	"time"
 
 	server "fracturedexodusserver/src"
+	mm "fracturedexodusserver/src/matchmaking"
 )
 
 type fakeMatchmakingManager struct {
@@ -62,11 +63,11 @@ func (manager *fakeMatchmakingManager) LastPlayerCount() int {
 
 func TestMatchmakingQueueAndStatus(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
-	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (server.QueueContext, error) {
-		return server.QueueContext{
+	api := mm.NewMatchmakingAPI("NA", manager)
+	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (mm.QueueContext, error) {
+		return mm.QueueContext{
 			RequesterPlayerID: "player-1",
-			Members: []server.QueueMember{
+			Members: []mm.QueueMember{
 				{PlayerID: "player-1", Username: "pilot"},
 			},
 		}, nil
@@ -106,11 +107,11 @@ func TestMatchmakingQueueAndStatus(t *testing.T) {
 
 func TestMatchmakingJoinStartsInstance(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
-	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (server.QueueContext, error) {
-		return server.QueueContext{
+	api := mm.NewMatchmakingAPI("NA", manager)
+	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (mm.QueueContext, error) {
+		return mm.QueueContext{
 			RequesterPlayerID: "player-1",
-			Members: []server.QueueMember{
+			Members: []mm.QueueMember{
 				{PlayerID: "player-1", Username: "pilot"},
 			},
 		}, nil
@@ -155,15 +156,15 @@ func TestMatchmakingJoinStartsInstance(t *testing.T) {
 
 func TestMatchmakingStatusNoTicketNotQueued(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
+	api := mm.NewMatchmakingAPI("NA", manager)
 	uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	playerID := "player-not-queued-" + uniqueSuffix
 	partyID := "party-not-queued-" + uniqueSuffix
-	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (server.QueueContext, error) {
-		return server.QueueContext{
+	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (mm.QueueContext, error) {
+		return mm.QueueContext{
 			RequesterPlayerID: playerID,
 			PartyID:           partyID,
-			Members: []server.QueueMember{
+			Members: []mm.QueueMember{
 				{PlayerID: playerID, Username: "pilot-not-queued"},
 			},
 		}, nil
@@ -192,11 +193,11 @@ func TestMatchmakingStatusNoTicketNotQueued(t *testing.T) {
 
 func TestMatchmakingStatusNoTicketReturnsOwnTicketWhenQueued(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
-	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (server.QueueContext, error) {
-		return server.QueueContext{
+	api := mm.NewMatchmakingAPI("NA", manager)
+	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (mm.QueueContext, error) {
+		return mm.QueueContext{
 			RequesterPlayerID: "player-1",
-			Members: []server.QueueMember{
+			Members: []mm.QueueMember{
 				{PlayerID: "player-1", Username: "pilot"},
 			},
 		}, nil
@@ -245,7 +246,7 @@ func TestMatchmakingQueuesSecondsApartJoinSameMatch(t *testing.T) {
 	}
 
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
+	api := mm.NewMatchmakingAPI("NA", manager)
 	api.SetMatchSize(2)
 	api.SetMatchStartWaitForTesting(30 * time.Second)
 
@@ -253,24 +254,24 @@ func TestMatchmakingQueuesSecondsApartJoinSameMatch(t *testing.T) {
 	playerOne := "player-one-" + uniqueSuffix
 	playerTwo := "player-two-" + uniqueSuffix
 
-	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (server.QueueContext, error) {
+	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (mm.QueueContext, error) {
 		switch sessionToken {
 		case "session-1":
-			return server.QueueContext{
+			return mm.QueueContext{
 				RequesterPlayerID: playerOne,
-				Members: []server.QueueMember{
+				Members: []mm.QueueMember{
 					{PlayerID: playerOne, Username: "pilot-one"},
 				},
 			}, nil
 		case "session-2":
-			return server.QueueContext{
+			return mm.QueueContext{
 				RequesterPlayerID: playerTwo,
-				Members: []server.QueueMember{
+				Members: []mm.QueueMember{
 					{PlayerID: playerTwo, Username: "pilot-two"},
 				},
 			}, nil
 		default:
-			return server.QueueContext{}, fmt.Errorf("invalid session token")
+			return mm.QueueContext{}, fmt.Errorf("invalid session token")
 		}
 	})
 
@@ -315,7 +316,7 @@ func TestMatchmakingQueuesSecondsApartJoinSameMatch(t *testing.T) {
 
 func TestMatchmakingMatchEndedMethodNotAllowed(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
+	api := mm.NewMatchmakingAPI("NA", manager)
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -330,7 +331,7 @@ func TestMatchmakingMatchEndedMethodNotAllowed(t *testing.T) {
 
 func TestMatchmakingMatchEndedBadRequest(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
+	api := mm.NewMatchmakingAPI("NA", manager)
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -345,7 +346,7 @@ func TestMatchmakingMatchEndedBadRequest(t *testing.T) {
 
 func TestMatchmakingRegisterServerMethodNotAllowed(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
+	api := mm.NewMatchmakingAPI("NA", manager)
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -360,7 +361,7 @@ func TestMatchmakingRegisterServerMethodNotAllowed(t *testing.T) {
 
 func TestMatchmakingRegisterServerBadRequest(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
+	api := mm.NewMatchmakingAPI("NA", manager)
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -468,7 +469,7 @@ func TestPartyInviteAllowsDifferentFaction(t *testing.T) {
 	}
 
 	manager := &fakeMatchmakingManager{}
-	api := server.NewMatchmakingAPI("NA", manager)
+	api := mm.NewMatchmakingAPI("NA", manager)
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 

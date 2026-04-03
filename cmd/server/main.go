@@ -11,6 +11,7 @@ import (
 	"time"
 
 	server "fracturedexodusserver/src"
+	mm "fracturedexodusserver/src/matchmaking"
 )
 
 func main() {
@@ -86,7 +87,7 @@ func startServer() {
 	playerAPI := server.NewPlayerAPI("dev")
 	gameServerManager := server.NewGameServerManager(server.DefaultGameServerConfig())
 	gameServerAPI := server.NewGameServerAPI(gameServerManager)
-	matchmakingAPI := server.NewMatchmakingAPI("NA", gameServerManager)
+	matchmakingAPI := mm.NewMatchmakingAPI("NA", gameServerManager)
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 	playerAPI.RegisterRoutes(mux)

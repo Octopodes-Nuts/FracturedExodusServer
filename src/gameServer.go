@@ -140,6 +140,7 @@ func (manager *GameServerManager) runContainer(ctx context.Context, containerNam
 	envArgs := []string{
 		"-e", fmt.Sprintf("MM_SERVER_NAME=%s", containerName),
 		"-e", fmt.Sprintf("MM_SERVER_REGISTRATION_KEY=%s", registrationKey),
+		"-e", "HOST_GATEWAY_IP=host.docker.internal",
 	}
 
 	var cmd *exec.Cmd

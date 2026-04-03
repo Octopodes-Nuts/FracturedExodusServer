@@ -60,6 +60,11 @@ func getCharacterByID(ctx context.Context, characterID string) (CharacterRecord,
 	return character, true, nil
 }
 
+// GetActiveCharacterForPlayer is an exported wrapper for use by sub-packages.
+func GetActiveCharacterForPlayer(ctx context.Context, playerID string) (CharacterRecord, bool, error) {
+	return getActiveCharacterForPlayer(ctx, playerID)
+}
+
 func getActiveCharacterForPlayer(ctx context.Context, playerID string) (CharacterRecord, bool, error) {
 	playerDB, err := GetDatabase(ctx)
 	if err != nil {

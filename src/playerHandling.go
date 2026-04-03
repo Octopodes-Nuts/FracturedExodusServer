@@ -877,12 +877,12 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 		return
 	}
 
-	if setActiveCharacterRequest.SessionToken == "" || setActiveCharacterRequest.CharacterID == "" {
-		fmt.Printf("[DEBUG][setActiveCharacter] rejected request: missing fields sessionTokenSet=%t characterId=%s\n", setActiveCharacterRequest.SessionToken != "", setActiveCharacterRequest.CharacterID)
+	if setActiveCharacterRequest.SessionToken == "" {
+		fmt.Printf("[DEBUG][setActiveCharacter] rejected request: missing sessionToken\n")
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
-			"message": "sessionToken and characterId are required",
+			"message": "sessionToken is required",
 		})
 		return
 	}
@@ -899,6 +899,51 @@ func (api *PlayerAPI) handleSetActiveCharacter(response http.ResponseWriter, req
 		return
 	}
 	fmt.Printf("[DEBUG][setActiveCharacter] session validated playerId=%s characterId=%s\n", playerID, setActiveCharacterRequest.CharacterID)
+
+	// Empty characterId clears the active character.
+	if setActiveCharacterRequest.CharacterID == "" {
+		db, err := GetDatabase(context.Background())
+		if err != nil {
+			fmt.Printf("[DEBUG][setActiveCharacter] GetDatabase failed playerId=%s err=%v\n", playerID, err)
+			response.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"status":  "error",
+				"message": "database error",
+				"error":   err.Error(),
+			})
+			return
+		}
+		if _, err := submitExec(context.Background(), db.DB, "DELETE FROM active_characters WHERE player_id = $1", playerID); err != nil {
+			fmt.Printf("[DEBUG][setActiveCharacter] delete active_characters failed playerId=%s err=%v\n", playerID, err)
+			response.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"status":  "error",
+				"message": "database error",
+				"error":   err.Error(),
+			})
+			return
+		}
+		if err := clearPartyActiveCharacterSelection(request.Context(), playerID); err != nil {
+			fmt.Printf("[DEBUG][setActiveCharacter] clearPartyActiveCharacterSelection failed playerId=%s err=%v\n", playerID, err)
+			response.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"status":  "error",
+				"message": "failed to sync party active character",
+				"error":   err.Error(),
+			})
+			return
+		}
+		fmt.Printf("[DEBUG][setActiveCharacter] active character cleared playerId=%s\n", playerID)
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":      "ok",
+			"playerId":    playerID,
+			"characterId": "",
+			"message":     "active character cleared",
+		})
+		return
+	}
 
 	character, found, err := getCharacterByID(request.Context(), setActiveCharacterRequest.CharacterID)
 	if err != nil {

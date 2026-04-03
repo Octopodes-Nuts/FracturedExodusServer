@@ -184,3 +184,13 @@ func getEnvOrDefault(key string, fallback string) string {
 
 	return value
 }
+
+// SubmitQuery is an exported wrapper for use by sub-packages.
+func SubmitQuery(ctx context.Context, database *sql.DB, query string, args ...interface{}) (*sql.Rows, error) {
+	return submitQuery(ctx, database, query, args...)
+}
+
+// SubmitExec is an exported wrapper for use by sub-packages.
+func SubmitExec(ctx context.Context, database *sql.DB, query string, args ...interface{}) (sql.Result, error) {
+	return submitExec(ctx, database, query, args...)
+}
