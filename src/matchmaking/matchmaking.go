@@ -77,6 +77,7 @@ type MatchmakingAPI struct {
 	startedAt           time.Time
 	rng                 *rand.Rand
 	resolveQueueContext func(ctx context.Context, sessionToken string) (QueueContext, error)
+	stopCh              chan struct{}
 }
 
 // NewMatchmakingAPI creates and starts a MatchmakingAPI.
@@ -91,10 +92,16 @@ func NewMatchmakingAPI(region string, manager MatchmakingManager) *MatchmakingAP
 		startedAt:           time.Now().UTC(),
 		rng:                 rand.New(rand.NewSource(time.Now().UnixNano())),
 		resolveQueueContext: resolveQueueContextFromSession,
+		stopCh:              make(chan struct{}),
 	}
 
 	go api.matchLoop()
 	return api
+}
+
+// Close stops the matchmaking loop goroutine.
+func (api *MatchmakingAPI) Close() {
+	close(api.stopCh)
 }
 
 // RegisterRoutes registers all matchmaking HTTP endpoints.
@@ -207,8 +214,15 @@ func (api *MatchmakingAPI) enqueueGroup(ctx context.Context, partyID string, mem
 }
 
 func (api *MatchmakingAPI) matchLoop() {
-	for range time.NewTicker(1 * time.Second).C {
-		api.tryCreateMatch()
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-api.stopCh:
+			return
+		case <-ticker.C:
+			api.tryCreateMatch()
+		}
 	}
 }
 

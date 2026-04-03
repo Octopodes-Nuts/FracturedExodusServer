@@ -5,6 +5,16 @@ import (
 	"fmt"
 )
 
+// SyncPartyActiveCharacterSelection is an exported wrapper for use by sub-packages.
+func SyncPartyActiveCharacterSelection(ctx context.Context, playerID string, character CharacterRecord) error {
+	return syncPartyActiveCharacterSelection(ctx, playerID, character)
+}
+
+// ClearPartyActiveCharacterSelection is an exported wrapper for use by sub-packages.
+func ClearPartyActiveCharacterSelection(ctx context.Context, playerID string) error {
+	return clearPartyActiveCharacterSelection(ctx, playerID)
+}
+
 // syncPartyActiveCharacterSelection updates a player's active character in their party
 // and, if they are the party leader, updates the party's faction to match.
 func syncPartyActiveCharacterSelection(ctx context.Context, playerID string, character CharacterRecord) error {

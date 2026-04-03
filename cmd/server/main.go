@@ -12,6 +12,7 @@ import (
 
 	server "fracturedexodusserver/src"
 	mm "fracturedexodusserver/src/matchmaking"
+	playerhandling "fracturedexodusserver/src/playerHandling"
 )
 
 func main() {
@@ -84,7 +85,7 @@ func startServer() {
 	}
 
 	api := server.NewServerAPI("FracturedExodusServer")
-	playerAPI := server.NewPlayerAPI("dev")
+	playerAPI := playerhandling.NewPlayerAPI("dev")
 	gameServerManager := server.NewGameServerManager(server.DefaultGameServerConfig())
 	gameServerAPI := server.NewGameServerAPI(gameServerManager)
 	matchmakingAPI := mm.NewMatchmakingAPI("NA", gameServerManager)

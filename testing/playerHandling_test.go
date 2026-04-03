@@ -10,10 +10,11 @@ import (
 	"time"
 
 	server "fracturedexodusserver/src"
+	playerhandling "fracturedexodusserver/src/playerHandling"
 )
 
 func TestPlayerLoginMethodNotAllowed(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -28,7 +29,7 @@ func TestPlayerLoginMethodNotAllowed(t *testing.T) {
 }
 
 func TestPlayerLoginPost(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -52,7 +53,7 @@ func TestPlayerLoginPost(t *testing.T) {
 }
 
 func TestPlayerAccountInfo(t *testing.T) {
-	api := server.NewPlayerAPI("dev-build")
+	api := playerhandling.NewPlayerAPI("dev-build")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -80,7 +81,7 @@ func TestPlayerAccountInfo(t *testing.T) {
 }
 
 func TestPlayerAccountInfoMethodNotAllowed(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -95,7 +96,7 @@ func TestPlayerAccountInfoMethodNotAllowed(t *testing.T) {
 }
 
 func TestPlayerEquipmentAndCharacters(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -119,7 +120,7 @@ func TestPlayerEquipmentAndCharacters(t *testing.T) {
 }
 
 func TestPlayerEquipmentAndCharactersMethodNotAllowed(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -134,7 +135,7 @@ func TestPlayerEquipmentAndCharactersMethodNotAllowed(t *testing.T) {
 }
 
 func TestSetActiveCharacterMethodNotAllowed(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -198,7 +199,7 @@ func TestSetActiveCharacterPersistsSelection(t *testing.T) {
 		t.Fatalf("insert character: %v", err)
 	}
 
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -320,7 +321,7 @@ func TestSetActiveCharacterUpdatesPrimaryPartyFaction(t *testing.T) {
 		t.Fatalf("insert party player: %v", err)
 	}
 
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -368,7 +369,7 @@ func TestSetActiveCharacterUpdatesPrimaryPartyFaction(t *testing.T) {
 }
 
 func TestFriendRequestMethodNotAllowed(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -383,7 +384,7 @@ func TestFriendRequestMethodNotAllowed(t *testing.T) {
 }
 
 func TestFriendRequestInvalidBody(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -407,7 +408,7 @@ func TestFriendRequestInvalidBody(t *testing.T) {
 }
 
 func TestAcceptRejectFriendRequestMethodNotAllowed(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -422,7 +423,7 @@ func TestAcceptRejectFriendRequestMethodNotAllowed(t *testing.T) {
 }
 
 func TestAcceptRejectFriendRequestMissingFields(t *testing.T) {
-	api := server.NewPlayerAPI("test")
+	api := playerhandling.NewPlayerAPI("test")
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 

@@ -64,6 +64,7 @@ func (manager *fakeMatchmakingManager) LastPlayerCount() int {
 func TestMatchmakingQueueAndStatus(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (mm.QueueContext, error) {
 		return mm.QueueContext{
 			RequesterPlayerID: "player-1",
@@ -108,6 +109,7 @@ func TestMatchmakingQueueAndStatus(t *testing.T) {
 func TestMatchmakingJoinStartsInstance(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (mm.QueueContext, error) {
 		return mm.QueueContext{
 			RequesterPlayerID: "player-1",
@@ -157,6 +159,7 @@ func TestMatchmakingJoinStartsInstance(t *testing.T) {
 func TestMatchmakingStatusNoTicketNotQueued(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	playerID := "player-not-queued-" + uniqueSuffix
 	partyID := "party-not-queued-" + uniqueSuffix
@@ -194,6 +197,7 @@ func TestMatchmakingStatusNoTicketNotQueued(t *testing.T) {
 func TestMatchmakingStatusNoTicketReturnsOwnTicketWhenQueued(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	api.SetQueueContextResolverForTesting(func(ctx context.Context, sessionToken string) (mm.QueueContext, error) {
 		return mm.QueueContext{
 			RequesterPlayerID: "player-1",
@@ -247,8 +251,9 @@ func TestMatchmakingQueuesSecondsApartJoinSameMatch(t *testing.T) {
 
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	api.SetMatchSize(2)
-	api.SetMatchStartWaitForTesting(30 * time.Second)
+	api.SetMatchStartWaitForTesting(2 * time.Second)
 
 	uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	playerOne := "player-one-" + uniqueSuffix
@@ -317,6 +322,7 @@ func TestMatchmakingQueuesSecondsApartJoinSameMatch(t *testing.T) {
 func TestMatchmakingMatchEndedMethodNotAllowed(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -332,6 +338,7 @@ func TestMatchmakingMatchEndedMethodNotAllowed(t *testing.T) {
 func TestMatchmakingMatchEndedBadRequest(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -347,6 +354,7 @@ func TestMatchmakingMatchEndedBadRequest(t *testing.T) {
 func TestMatchmakingRegisterServerMethodNotAllowed(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -362,6 +370,7 @@ func TestMatchmakingRegisterServerMethodNotAllowed(t *testing.T) {
 func TestMatchmakingRegisterServerBadRequest(t *testing.T) {
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
@@ -470,6 +479,7 @@ func TestPartyInviteAllowsDifferentFaction(t *testing.T) {
 
 	manager := &fakeMatchmakingManager{}
 	api := mm.NewMatchmakingAPI("NA", manager)
+	defer api.Close()
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 

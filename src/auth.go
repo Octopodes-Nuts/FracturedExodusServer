@@ -26,6 +26,11 @@ func validateSessionToken(sessionToken string) error {
 	return fmt.Errorf("invalid session token")
 }
 
+// ValidateSessionToken is an exported wrapper for use by sub-packages.
+func ValidateSessionToken(sessionToken string) error {
+	return validateSessionToken(sessionToken)
+}
+
 // GetPlayerIDFromSession is an exported wrapper for use by sub-packages.
 func GetPlayerIDFromSession(sessionToken string) (string, error) {
 	return getPlayerIDFromSession(sessionToken)
