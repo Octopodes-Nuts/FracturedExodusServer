@@ -15,6 +15,7 @@ type queueTicketRow struct {
 	PartyID  string
 	QueuedAt time.Time
 	Username string
+	Faction  int
 }
 
 type queueTicketGroup struct {
@@ -241,6 +242,47 @@ func loadQueueGroupsFromDB(ctx context.Context, mmDB *server.Database) ([]queueT
 	for _, key := range orderedKeys {
 		groups = append(groups, *groupsByKey[key])
 	}
+
+	// Resolve each player's active character faction from the player DB.
+	allPlayerIDs := make([]string, 0)
+	for _, group := range groups {
+		for _, row := range group.Rows {
+			allPlayerIDs = append(allPlayerIDs, row.PlayerID)
+		}
+	}
+	if len(allPlayerIDs) > 0 {
+		playerDB, playerDBErr := server.GetDatabase(ctx)
+		if playerDBErr == nil {
+			factionQuery := fmt.Sprintf(
+				`SELECT ac.player_id, c.faction FROM active_characters ac
+				 JOIN characters c ON c.character_id = ac.character_id
+				 WHERE ac.player_id IN (%s)`,
+				buildPlaceholderList(1, len(allPlayerIDs)),
+			)
+			args := make([]any, len(allPlayerIDs))
+			for i, id := range allPlayerIDs {
+				args[i] = id
+			}
+			factionRows, factionErr := server.SubmitQuery(ctx, playerDB.DB, factionQuery, args...)
+			if factionErr == nil {
+				factionByPlayerID := make(map[string]int, len(allPlayerIDs))
+				for factionRows.Next() {
+					var pid string
+					var faction int
+					if scanErr := factionRows.Scan(&pid, &faction); scanErr == nil {
+						factionByPlayerID[pid] = faction
+					}
+				}
+				_ = factionRows.Close()
+				for gi := range groups {
+					for ri := range groups[gi].Rows {
+						groups[gi].Rows[ri].Faction = factionByPlayerID[groups[gi].Rows[ri].PlayerID]
+					}
+				}
+			}
+		}
+	}
+
 	return groups, nil
 }
 

@@ -12,7 +12,7 @@ import (
 
 	server "fracturedexodusserver/src"
 	mm "fracturedexodusserver/src/matchmaking"
-	playerhandling "fracturedexodusserver/src/playerHandling"
+	playerhandling "fracturedexodusserver/src/playerhandling"
 )
 
 func main() {

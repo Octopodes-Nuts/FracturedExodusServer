@@ -224,3 +224,9 @@ func resolveServerNameFromToken(ctx context.Context, mmDB *server.Database, serv
 
 	return serverName, nil
 }
+
+// ValidateServerToken validates a server token and returns the server name if valid.
+// Returns an error if the token is invalid or empty.
+func ValidateServerToken(ctx context.Context, mmDB *server.Database, serverToken string) (string, error) {
+	return resolveServerNameFromToken(ctx, mmDB, serverToken)
+}

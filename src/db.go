@@ -51,7 +51,8 @@ var initStatements = []string{
 		weapon_3 TEXT NOT NULL,
 		equipment_1 TEXT NOT NULL,
 		equipment_2 TEXT NOT NULL,
-		devotion_points INTEGER NOT NULL DEFAULT 0,
+		xp INTEGER NOT NULL DEFAULT 0,
+		devotion INTEGER NOT NULL DEFAULT 0,
 		class_type INTEGER NOT NULL DEFAULT 0,
 		faction INTEGER NOT NULL DEFAULT 0
 	);`,
@@ -61,6 +62,9 @@ var initStatements = []string{
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);`,
 	`ALTER TABLE players ADD COLUMN IF NOT EXISTS friend_code_suffix TEXT UNIQUE;`,
+	`DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='characters' AND column_name='devotion_points') AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='characters' AND column_name='devotion') THEN ALTER TABLE characters RENAME COLUMN devotion_points TO devotion; END IF; END $$;`,
+	`ALTER TABLE characters ADD COLUMN IF NOT EXISTS xp INTEGER NOT NULL DEFAULT 0;`,
+	`ALTER TABLE characters ADD COLUMN IF NOT EXISTS devotion INTEGER NOT NULL DEFAULT 0;`,
 	`CREATE TABLE IF NOT EXISTS friend_connections (
 		connection_id TEXT PRIMARY KEY,
 		player_one_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,

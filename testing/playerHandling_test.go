@@ -10,7 +10,7 @@ import (
 	"time"
 
 	server "fracturedexodusserver/src"
-	playerhandling "fracturedexodusserver/src/playerHandling"
+	playerhandling "fracturedexodusserver/src/playerhandling"
 )
 
 func TestPlayerLoginMethodNotAllowed(t *testing.T) {
@@ -57,7 +57,7 @@ func TestPlayerAccountInfo(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/player/accountInfo", nil)
+	request := httptest.NewRequest(http.MethodPost, "/player/account/info", nil)
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
@@ -85,7 +85,7 @@ func TestPlayerAccountInfoMethodNotAllowed(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodGet, "/player/accountInfo", nil)
+	request := httptest.NewRequest(http.MethodGet, "/player/account/info", nil)
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
@@ -139,7 +139,7 @@ func TestSetActiveCharacterMethodNotAllowed(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodGet, "/player/setActiveCharacter", nil)
+	request := httptest.NewRequest(http.MethodGet, "/player/character/set", nil)
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
@@ -203,7 +203,7 @@ func TestSetActiveCharacterPersistsSelection(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/player/setActiveCharacter", strings.NewReader(`{"sessionToken":"`+sessionToken+`","characterId":"`+characterID+`"}`))
+	request := httptest.NewRequest(http.MethodPost, "/player/character/set", strings.NewReader(`{"sessionToken":"`+sessionToken+`","characterId":"`+characterID+`"}`))
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
@@ -325,7 +325,7 @@ func TestSetActiveCharacterUpdatesPrimaryPartyFaction(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/player/setActiveCharacter", strings.NewReader(`{"sessionToken":"`+sessionToken+`","characterId":"`+characterID+`"}`))
+	request := httptest.NewRequest(http.MethodPost, "/player/character/set", strings.NewReader(`{"sessionToken":"`+sessionToken+`","characterId":"`+characterID+`"}`))
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 
@@ -373,7 +373,7 @@ func TestFriendRequestMethodNotAllowed(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodGet, "/player/friendRequest", nil)
+	request := httptest.NewRequest(http.MethodGet, "/player/friend/request", nil)
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
@@ -388,7 +388,7 @@ func TestFriendRequestInvalidBody(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/player/friendRequest", strings.NewReader("not-json"))
+	request := httptest.NewRequest(http.MethodPost, "/player/friend/request", strings.NewReader("not-json"))
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
@@ -412,7 +412,7 @@ func TestAcceptRejectFriendRequestMethodNotAllowed(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodGet, "/player/acceptRejectFriendRequest", nil)
+	request := httptest.NewRequest(http.MethodGet, "/player/friend/accept", nil)
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)
@@ -427,7 +427,7 @@ func TestAcceptRejectFriendRequestMissingFields(t *testing.T) {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodPost, "/player/acceptRejectFriendRequest", strings.NewReader(`{"accept":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/player/friend/accept", strings.NewReader(`{"accept":true}`))
 	response := httptest.NewRecorder()
 
 	mux.ServeHTTP(response, request)

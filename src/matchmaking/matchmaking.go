@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	defaultMatchSize = 12
+	defaultMatchSize     = 12
+	maxPlayersPerFaction = 4
 	// defaultMatchStartWait = 30 * time.Second
 	defaultMatchStartWait = 1 * time.Second
 )
@@ -376,6 +377,8 @@ func removeTicket(queue []matchGroup, ticketID string) []matchGroup {
 
 func selectTicketsForMatch(groups []queueTicketGroup, matchSize int) []queueTicketRow {
 	selected := make([]queueTicketRow, 0, matchSize)
+	factionCounts := make(map[int]int)
+
 	for _, group := range groups {
 		groupSize := len(group.Rows)
 		if len(selected) == 0 && groupSize > matchSize {
@@ -383,7 +386,27 @@ func selectTicketsForMatch(groups []queueTicketGroup, matchSize int) []queueTick
 			break
 		}
 		if len(selected)+groupSize > matchSize {
-			break
+			continue
+		}
+
+		// Check that adding this group won't exceed the per-faction player limit.
+		groupFactionCounts := make(map[int]int, groupSize)
+		for _, row := range group.Rows {
+			groupFactionCounts[row.Faction]++
+		}
+		factionViolated := false
+		for faction, count := range groupFactionCounts {
+			if factionCounts[faction]+count > maxPlayersPerFaction {
+				factionViolated = true
+				break
+			}
+		}
+		if factionViolated {
+			continue
+		}
+
+		for faction, count := range groupFactionCounts {
+			factionCounts[faction] += count
 		}
 		selected = append(selected, group.Rows...)
 		if len(selected) == matchSize {

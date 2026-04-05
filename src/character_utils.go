@@ -12,6 +12,8 @@ type CharacterRecord struct {
 	Weapon3    string
 	Equipment1 string
 	Equipment2 string
+	XP         int
+	Devotion   int
 	ClassType  int
 	Faction    int
 }
@@ -25,7 +27,7 @@ func getCharacterByID(ctx context.Context, characterID string) (CharacterRecord,
 	rows, err := submitQuery(
 		ctx,
 		playerDB.DB,
-		`SELECT character_id, player_id, name, skin_key, weapon_1, weapon_2, weapon_3, equipment_1, equipment_2, class_type, faction
+		`SELECT character_id, player_id, name, skin_key, weapon_1, weapon_2, weapon_3, equipment_1, equipment_2, xp, devotion, class_type, faction
 		 FROM characters
 		 WHERE character_id = $1
 		 LIMIT 1`,
@@ -51,6 +53,8 @@ func getCharacterByID(ctx context.Context, characterID string) (CharacterRecord,
 		&character.Weapon3,
 		&character.Equipment1,
 		&character.Equipment2,
+		&character.XP,
+		&character.Devotion,
 		&character.ClassType,
 		&character.Faction,
 	); err != nil {
@@ -79,7 +83,7 @@ func getActiveCharacterForPlayer(ctx context.Context, playerID string) (Characte
 	rows, err := submitQuery(
 		ctx,
 		playerDB.DB,
-		`SELECT c.character_id, c.player_id, c.name, c.skin_key, c.weapon_1, c.weapon_2, c.weapon_3, c.equipment_1, c.equipment_2, c.class_type, c.faction
+		`SELECT c.character_id, c.player_id, c.name, c.skin_key, c.weapon_1, c.weapon_2, c.weapon_3, c.equipment_1, c.equipment_2, c.xp, c.devotion, c.class_type, c.faction
 		 FROM active_characters ac
 		 JOIN characters c ON c.character_id = ac.character_id
 		 WHERE ac.player_id = $1
@@ -106,6 +110,8 @@ func getActiveCharacterForPlayer(ctx context.Context, playerID string) (Characte
 		&character.Weapon3,
 		&character.Equipment1,
 		&character.Equipment2,
+		&character.XP,
+		&character.Devotion,
 		&character.ClassType,
 		&character.Faction,
 	); err != nil {

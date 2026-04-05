@@ -599,6 +599,15 @@ func (api *MatchmakingAPI) handleHeartbeat(response http.ResponseWriter, request
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	if updated == 0 {
+		fmt.Printf("[DEBUG][heartbeat] no matched tickets found for heartbeat partyId=%s memberCount=%d\n", queueContext.PartyID, len(memberIDs))
+		response.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "no active match found",
+		})
+		return
+	}
 	fmt.Printf("[DEBUG][heartbeat] successfully updated heartbeat memberCount=%d updatedCount=%d\n", len(memberIDs), updated)
 
 	response.Header().Set("Content-Type", "application/json")
@@ -626,6 +635,20 @@ func (api *MatchmakingAPI) handleCancel(response http.ResponseWriter, request *h
 		return
 	}
 	fmt.Printf("[DEBUG][cancel] cancelling ticket ticketId=%s\n", ticketID)
+
+	mmDB, err := server.GetMMDB(request.Context())
+	if err != nil {
+		fmt.Printf("[DEBUG][cancel] GetMMDB failed ticketId=%s err=%v\n", ticketID, err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if err := updateTicketStatuses(request.Context(), mmDB, []string{ticketID}, "left", nil); err != nil {
+		fmt.Printf("[DEBUG][cancel] updateTicketStatuses failed ticketId=%s err=%v\n", ticketID, err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	api.mu.Lock()
 	if ticket, ok := api.tickets[ticketID]; ok {
 		ticket.status = "cancelled"
