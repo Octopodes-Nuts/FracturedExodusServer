@@ -18,13 +18,13 @@ type CharacterRecord struct {
 	Faction    int
 }
 
-func getCharacterByID(ctx context.Context, characterID string) (CharacterRecord, bool, error) {
+func GetCharacterByID(ctx context.Context, characterID string) (CharacterRecord, bool, error) {
 	playerDB, err := GetDatabase(ctx)
 	if err != nil {
 		return CharacterRecord{}, false, err
 	}
 
-	rows, err := submitQuery(
+	rows, err := SubmitQuery(
 		ctx,
 		playerDB.DB,
 		`SELECT character_id, player_id, name, skin_key, weapon_1, weapon_2, weapon_3, equipment_1, equipment_2, xp, devotion, class_type, faction
@@ -64,23 +64,13 @@ func getCharacterByID(ctx context.Context, characterID string) (CharacterRecord,
 	return character, true, nil
 }
 
-// GetActiveCharacterForPlayer is an exported wrapper for use by sub-packages.
 func GetActiveCharacterForPlayer(ctx context.Context, playerID string) (CharacterRecord, bool, error) {
-	return getActiveCharacterForPlayer(ctx, playerID)
-}
-
-// GetCharacterByID is an exported wrapper for use by sub-packages.
-func GetCharacterByID(ctx context.Context, characterID string) (CharacterRecord, bool, error) {
-	return getCharacterByID(ctx, characterID)
-}
-
-func getActiveCharacterForPlayer(ctx context.Context, playerID string) (CharacterRecord, bool, error) {
 	playerDB, err := GetDatabase(ctx)
 	if err != nil {
 		return CharacterRecord{}, false, err
 	}
 
-	rows, err := submitQuery(
+	rows, err := SubmitQuery(
 		ctx,
 		playerDB.DB,
 		`SELECT c.character_id, c.player_id, c.name, c.skin_key, c.weapon_1, c.weapon_2, c.weapon_3, c.equipment_1, c.equipment_2, c.xp, c.devotion, c.class_type, c.faction

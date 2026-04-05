@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	server "fracturedexodusserver/src"
+	server "fracturedexodusserver/server"
 )
 
 type queueTicketRow struct {

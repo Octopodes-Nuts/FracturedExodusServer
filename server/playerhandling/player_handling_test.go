@@ -1,4 +1,4 @@
-package server_test
+package playerhandling_test
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	server "fracturedexodusserver/src"
-	playerhandling "fracturedexodusserver/src/playerhandling"
+	"fracturedexodusserver/server"
+	"fracturedexodusserver/server/playerhandling"
 )
 
 func TestPlayerLoginMethodNotAllowed(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	server "fracturedexodusserver/src"
+	server "fracturedexodusserver/server"
 )
 
 type partyInviteRecord struct {

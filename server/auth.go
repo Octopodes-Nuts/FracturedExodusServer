@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-func validateSessionToken(sessionToken string) error {
+func ValidateSessionToken(sessionToken string) error {
 	db, err := GetDatabase(context.Background())
 	if err != nil {
 		return err
 	}
 
 	query := "SELECT 1 FROM session_tokens WHERE session_token = $1 AND expiration > $2"
-	rows, err := submitQuery(context.Background(), db.DB, query, sessionToken, time.Now().UTC())
+	rows, err := SubmitQuery(context.Background(), db.DB, query, sessionToken, time.Now().UTC())
 	if err != nil {
 		return err
 	}
@@ -26,24 +26,14 @@ func validateSessionToken(sessionToken string) error {
 	return fmt.Errorf("invalid session token")
 }
 
-// ValidateSessionToken is an exported wrapper for use by sub-packages.
-func ValidateSessionToken(sessionToken string) error {
-	return validateSessionToken(sessionToken)
-}
-
-// GetPlayerIDFromSession is an exported wrapper for use by sub-packages.
 func GetPlayerIDFromSession(sessionToken string) (string, error) {
-	return getPlayerIDFromSession(sessionToken)
-}
-
-func getPlayerIDFromSession(sessionToken string) (string, error) {
 	db, err := GetDatabase(context.Background())
 	if err != nil {
 		return "", err
 	}
 
 	query := "SELECT player_id FROM session_tokens WHERE session_token = $1 AND expiration > $2"
-	rows, err := submitQuery(context.Background(), db.DB, query, sessionToken, time.Now().UTC())
+	rows, err := SubmitQuery(context.Background(), db.DB, query, sessionToken, time.Now().UTC())
 	if err != nil {
 		return "", err
 	}

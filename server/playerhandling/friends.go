@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	server "fracturedexodusserver/src"
+	server "fracturedexodusserver/server"
 
 	"github.com/google/uuid"
 )

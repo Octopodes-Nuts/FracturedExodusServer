@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	server "fracturedexodusserver/src"
+	server "fracturedexodusserver/server"
 )
 
 func (api *MatchmakingAPI) handleRegisterServer(response http.ResponseWriter, request *http.Request) {

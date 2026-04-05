@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	server "fracturedexodusserver/src"
+	"fracturedexodusserver/server"
 )
 
 func TestServerHealth(t *testing.T) {

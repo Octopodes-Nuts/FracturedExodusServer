@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	server "fracturedexodusserver/src"
-	mm "fracturedexodusserver/src/matchmaking"
-	playerhandling "fracturedexodusserver/src/playerhandling"
+	server "fracturedexodusserver/server"
+	mm "fracturedexodusserver/server/matchmaking"
+	playerhandling "fracturedexodusserver/server/playerhandling"
 )
 
 func main() {

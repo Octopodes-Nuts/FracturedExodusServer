@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	server "fracturedexodusserver/src"
-	"fracturedexodusserver/src/matchmaking"
+	server "fracturedexodusserver/server"
+	"fracturedexodusserver/server/matchmaking"
 
 	"github.com/google/uuid"
 )
@@ -101,7 +101,13 @@ func (api *PlayerAPI) handleCharacters(response http.ResponseWriter, request *ht
 	for rows.Next() {
 		var character Character
 		if err := rows.Scan(&character.ID, &character.Name, &character.SkinKey, &character.Weapon1, &character.Weapon2, &character.Weapon3, &character.Equipment1, &character.Equipment2, &character.XP, &character.Devotion, &character.ClassType, &character.Faction); err != nil {
-			fmt.Printf("Error scanning database row: %v\n", err)
+			fmt.Printf("[DEBUG][characters] scan failed playerId=%s err=%v\n", playerID, err)
+			response.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"status":  "error",
+				"message": "database scan failed",
+				"error":   err.Error(),
+			})
 			return
 		}
 		characters = append(characters, character)
@@ -437,11 +443,11 @@ func (api *PlayerAPI) handleNewCharacter(response http.ResponseWriter, request *
 		return
 	}
 
-	if newCharacterRequest.Name == "" || newCharacterRequest.SkinKey == "" {
+	if newCharacterRequest.Name == "" {
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
-			"message": "name and skinKey are required",
+			"message": "name is required",
 		})
 		return
 	}

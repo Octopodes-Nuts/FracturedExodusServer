@@ -173,14 +173,6 @@ func execStatements(ctx context.Context, database *sql.DB, statements []string) 
 }
 
 // get database response for query
-func submitQuery(ctx context.Context, database *sql.DB, query string, args ...interface{}) (*sql.Rows, error) {
-	return database.QueryContext(ctx, query, args...)
-}
-
-func submitExec(ctx context.Context, database *sql.DB, query string, args ...interface{}) (sql.Result, error) {
-	return database.ExecContext(ctx, query, args...)
-}
-
 func getEnvOrDefault(key string, fallback string) string {
 	value := os.Getenv(key)
 	if value == "" {
@@ -190,12 +182,10 @@ func getEnvOrDefault(key string, fallback string) string {
 	return value
 }
 
-// SubmitQuery is an exported wrapper for use by sub-packages.
 func SubmitQuery(ctx context.Context, database *sql.DB, query string, args ...interface{}) (*sql.Rows, error) {
-	return submitQuery(ctx, database, query, args...)
+	return database.QueryContext(ctx, query, args...)
 }
 
-// SubmitExec is an exported wrapper for use by sub-packages.
 func SubmitExec(ctx context.Context, database *sql.DB, query string, args ...interface{}) (sql.Result, error) {
-	return submitExec(ctx, database, query, args...)
+	return database.ExecContext(ctx, query, args...)
 }

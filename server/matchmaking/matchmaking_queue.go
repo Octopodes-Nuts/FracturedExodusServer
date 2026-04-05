@@ -9,7 +9,7 @@ import (
 	"sort"
 	"time"
 
-	server "fracturedexodusserver/src"
+	server "fracturedexodusserver/server"
 )
 
 // handleQueue enqueues a player and their party for matchmaking.

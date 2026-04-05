@@ -1,4 +1,4 @@
-package server_test
+package matchmaking_test
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	server "fracturedexodusserver/src"
-	mm "fracturedexodusserver/src/matchmaking"
+	"fracturedexodusserver/server"
+	mm "fracturedexodusserver/server/matchmaking"
 )
 
 type fakeMatchmakingManager struct {
