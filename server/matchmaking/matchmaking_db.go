@@ -404,7 +404,7 @@ func markTicketsInMatchByTicketID(ctx context.Context, mmDB *server.Database, ti
 
 	now := time.Now().UTC()
 	query := `WITH selected_ticket AS (
-		SELECT ticket_id, COALESCE(party_id, '') AS party_id, game_id
+		SELECT ticket_id, COALESCE(party_id, '') AS party_id, COALESCE(game_id, '') AS game_id
 		FROM matchmaking_tickets
 		WHERE ticket_id = $1
 		LIMIT 1
@@ -413,6 +413,7 @@ func markTicketsInMatchByTicketID(ctx context.Context, mmDB *server.Database, ti
 		FROM matchmaking_tickets mt
 		JOIN selected_ticket st
 			ON mt.game_id = st.game_id
+			AND st.game_id != ''
 			AND (mt.party_id = st.party_id OR st.party_id = '')
 		WHERE mt.status IN ('matched', 'in_match')
 	)
