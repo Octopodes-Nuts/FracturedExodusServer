@@ -14,16 +14,17 @@ import (
 )
 
 type partyInviteRecord struct {
-	InviteID      string `json:"inviteId"`
-	PartyID       string `json:"partyId"`
-	FromPlayerID  string `json:"fromPlayerId"`
-	ToPlayerID    string `json:"toPlayerId"`
-	Status        string `json:"status"`
-	CreatedAt     string `json:"createdAt"`
-	ExpiresAt     string `json:"expiresAt"`
-	Expired       bool   `json:"expired"`
-	SeenByInviter bool   `json:"seenByInviter"`
-	SeenByInvitee bool   `json:"seenByInvitee"`
+	InviteID            string `json:"inviteId"`
+	PartyID             string `json:"partyId"`
+	FromPlayerID        string `json:"fromPlayerId"`
+	FromPlayerUsername  string `json:"fromPlayerUsername"`
+	ToPlayerID          string `json:"toPlayerId"`
+	Status              string `json:"status"`
+	CreatedAt           string `json:"createdAt"`
+	ExpiresAt           string `json:"expiresAt"`
+	Expired             bool   `json:"expired"`
+	SeenByInviter       bool   `json:"seenByInviter"`
+	SeenByInvitee       bool   `json:"seenByInvitee"`
 }
 
 type pendingInvite struct {
@@ -391,6 +392,13 @@ func (api *MatchmakingAPI) handlePartyInvites(response http.ResponseWriter, requ
 		return
 	}
 
+	playerDB, err := server.GetDatabase(request.Context())
+	if err != nil {
+		fmt.Printf("[DEBUG][partyInvites] GetDatabase failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	removedFullySeenInvites, err := deleteFullySeenNonPendingInvitesForPlayer(request.Context(), mmDB, playerID)
 	if err != nil {
 		fmt.Printf("[DEBUG][partyInvites] cleanup fully-seen invites failed playerId=%s err=%v\n", playerID, err)
@@ -401,13 +409,13 @@ func (api *MatchmakingAPI) handlePartyInvites(response http.ResponseWriter, requ
 		fmt.Printf("[DEBUG][partyInvites] removed fully-seen invites playerId=%s removed=%d\n", playerID, removedFullySeenInvites)
 	}
 
-	inbound, err := listInvitesForPlayer(request.Context(), mmDB, playerID, true)
+	inbound, err := listInvitesForPlayer(request.Context(), mmDB, playerDB, playerID, true)
 	if err != nil {
 		fmt.Printf("[DEBUG][partyInvites] inbound invite lookup failed playerId=%s err=%v\n", playerID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	outbound, err := listInvitesForPlayer(request.Context(), mmDB, playerID, false)
+	outbound, err := listInvitesForPlayer(request.Context(), mmDB, playerDB, playerID, false)
 	if err != nil {
 		fmt.Printf("[DEBUG][partyInvites] outbound invite lookup failed playerId=%s err=%v\n", playerID, err)
 		response.WriteHeader(http.StatusInternalServerError)
@@ -494,13 +502,20 @@ func (api *MatchmakingAPI) handlePartyStatus(response http.ResponseWriter, reque
 		fmt.Printf("[DEBUG][partyStatus] deleted fully-seen invites playerId=%s removed=%d\n", playerID, removedFullySeenInvites)
 	}
 
-	inbound, err := listInvitesForPlayer(request.Context(), mmDB, playerID, true)
+	playerDB, err := server.GetDatabase(request.Context())
+	if err != nil {
+		fmt.Printf("[DEBUG][partyStatus] GetDatabase failed: %v\n", err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	inbound, err := listInvitesForPlayer(request.Context(), mmDB, playerDB, playerID, true)
 	if err != nil {
 		fmt.Printf("[DEBUG][partyStatus] inbound invite lookup failed playerId=%s err=%v\n", playerID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	outbound, err := listInvitesForPlayer(request.Context(), mmDB, playerID, false)
+	outbound, err := listInvitesForPlayer(request.Context(), mmDB, playerDB, playerID, false)
 	if err != nil {
 		fmt.Printf("[DEBUG][partyStatus] outbound invite lookup failed playerId=%s err=%v\n", playerID, err)
 		response.WriteHeader(http.StatusInternalServerError)
@@ -530,13 +545,6 @@ func (api *MatchmakingAPI) handlePartyStatus(response http.ResponseWriter, reque
 	members, err := listPartyMembers(request.Context(), mmDB, partyID)
 	if err != nil {
 		fmt.Printf("[DEBUG][partyStatus] listPartyMembers failed partyId=%s err=%v\n", partyID, err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	playerDB, err := server.GetDatabase(request.Context())
-	if err != nil {
-		fmt.Printf("[DEBUG][partyStatus] GetDatabase failed: %v\n", err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -894,7 +902,7 @@ func getPartyPrimaryPlayer(ctx context.Context, mmDB *server.Database, partyID s
 	return playerID, nil
 }
 
-func listInvitesForPlayer(ctx context.Context, mmDB *server.Database, playerID string, inbound bool) ([]partyInviteRecord, error) {
+func listInvitesForPlayer(ctx context.Context, mmDB *server.Database, playerDB *server.Database, playerID string, inbound bool) ([]partyInviteRecord, error) {
 	column := "to_player_id"
 	if !inbound {
 		column = "from_player_id"
@@ -919,6 +927,15 @@ func listInvitesForPlayer(ctx context.Context, mmDB *server.Database, playerID s
 		var expiresAt time.Time
 		if err := rows.Scan(&record.InviteID, &record.PartyID, &record.FromPlayerID, &record.ToPlayerID, &record.Status, &createdAt, &expiresAt, &record.SeenByInviter, &record.SeenByInvitee); err != nil {
 			return nil, err
+		}
+
+		record.FromPlayerUsername = record.FromPlayerID
+		nameRows, queryErr := server.SubmitQuery(ctx, playerDB.DB, "SELECT account_name FROM players WHERE id = $1", record.FromPlayerID)
+		if queryErr == nil {
+			if nameRows.Next() {
+				_ = nameRows.Scan(&record.FromPlayerUsername)
+			}
+			_ = nameRows.Close()
 		}
 
 		record.CreatedAt = createdAt.Format(time.RFC3339)
