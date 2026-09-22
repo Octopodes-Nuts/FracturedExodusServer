@@ -233,6 +233,8 @@ func (api *PlayerAPI) handleFriendRequest(response http.ResponseWriter, request 
 			}
 
 			fmt.Printf("[DEBUG][friendRequest] request accepted for processing by reactivating connectionId=%s\n", connectionID)
+			api.pushAccountInfoUpdated(context.Background(), friendRequest.PlayerID)
+			api.pushAccountInfoUpdated(context.Background(), senderID)
 			response.Header().Set("Content-Type", "application/json")
 			response.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(response).Encode(map[string]any{
@@ -278,6 +280,8 @@ func (api *PlayerAPI) handleFriendRequest(response http.ResponseWriter, request 
 	}
 
 	fmt.Printf("[DEBUG][friendRequest] friend request created senderId=%s targetId=%s connectionId=%s\n", senderID, friendRequest.PlayerID, connectionID)
+	api.pushAccountInfoUpdated(context.Background(), friendRequest.PlayerID)
+	api.pushAccountInfoUpdated(context.Background(), senderID)
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{
@@ -414,6 +418,8 @@ func (api *PlayerAPI) handleAcceptRejectFriendRequest(response http.ResponseWrit
 	}
 
 	fmt.Printf("[DEBUG][acceptRejectFriendRequest] request updated connectionId=%s senderId=%s accepterId=%s newStatus=%s\n", connectionID, acceptRejectRequest.PlayerID, accepterID, nextStatus)
+	api.pushAccountInfoUpdated(context.Background(), acceptRejectRequest.PlayerID)
+	api.pushAccountInfoUpdated(context.Background(), accepterID)
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{

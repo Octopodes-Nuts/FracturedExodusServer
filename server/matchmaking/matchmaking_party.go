@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	server "fracturedexodusserver/server"
+	ws "fracturedexodusserver/server/ws"
 )
 
 type partyInviteRecord struct {
@@ -168,6 +169,8 @@ func (api *MatchmakingAPI) handlePartyInvite(response http.ResponseWriter, reque
 	}
 	fmt.Printf("[DEBUG][partyInvite] invite created inviteId=%s partyId=%s inviterId=%s targetPlayerId=%s\n", inviteID, partyID, inviterID, inviteRequest.PlayerID)
 
+	api.pushPartyInviteCreated(request.Context(), mmDB, playerDB, inviteRequest.PlayerID)
+
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{
@@ -242,10 +245,17 @@ func (api *MatchmakingAPI) handlePartyRespond(response http.ResponseWriter, requ
 	if respondRequest.Accept {
 		nextStatus = "accepted"
 		fmt.Printf("[DEBUG][partyRespond] accept path move player inviteeId=%s targetPartyId=%s\n", inviteeID, invite.PartyID)
+		oldPartyID, _ := findPartyForPlayer(request.Context(), mmDB, inviteeID)
 		if err := movePlayerToParty(request.Context(), mmDB, inviteeID, invite.PartyID); err != nil {
 			fmt.Printf("[DEBUG][partyRespond] movePlayerToParty failed inviteeId=%s targetPartyId=%s err=%v\n", inviteeID, invite.PartyID, err)
 			response.WriteHeader(http.StatusInternalServerError)
 			return
+		}
+		if playerDB, dbErr := server.GetDatabase(request.Context()); dbErr == nil {
+			if oldPartyID != "" && oldPartyID != invite.PartyID {
+				api.pushPartyStatusToMembers(request.Context(), mmDB, playerDB, oldPartyID)
+			}
+			api.pushPartyStatusToMembers(request.Context(), mmDB, playerDB, invite.PartyID)
 		}
 	}
 
@@ -344,6 +354,10 @@ func (api *MatchmakingAPI) handlePartyLeave(response http.ResponseWriter, reques
 		return
 	}
 	fmt.Printf("[DEBUG][partyLeave] player left party playerId=%s partyId=%s\n", playerID, partyID)
+
+	if playerDB, dbErr := server.GetDatabase(request.Context()); dbErr == nil {
+		api.pushPartyStatusToMembers(request.Context(), mmDB, playerDB, partyID)
+	}
 
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
@@ -509,62 +523,69 @@ func (api *MatchmakingAPI) handlePartyStatus(response http.ResponseWriter, reque
 		return
 	}
 
-	inbound, err := listInvitesForPlayer(request.Context(), mmDB, playerDB, playerID, true)
+	payload, err := buildPartyStatusPayload(request.Context(), mmDB, playerDB, playerID)
 	if err != nil {
-		fmt.Printf("[DEBUG][partyStatus] inbound invite lookup failed playerId=%s err=%v\n", playerID, err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	outbound, err := listInvitesForPlayer(request.Context(), mmDB, playerDB, playerID, false)
-	if err != nil {
-		fmt.Printf("[DEBUG][partyStatus] outbound invite lookup failed playerId=%s err=%v\n", playerID, err)
+		fmt.Printf("[DEBUG][partyStatus] buildPartyStatusPayload failed playerId=%s err=%v\n", playerID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	partyID, err := findPartyForPlayer(request.Context(), mmDB, playerID)
+	fmt.Printf("[DEBUG][partyStatus] request succeeded playerId=%s payload=%+v\n", playerID, payload)
+
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(response).Encode(payload)
+}
+
+// buildPartyStatusPayload builds the full matchmaking.party.status response payload (party
+// membership, faction, allMembersHaveActiveCharacter, and playerID's own inbound/outbound
+// invites) for playerID. It is the single source of truth for that payload shape, shared by:
+//   - the HTTP GET/POST /matchmaking/party/status handler (handlePartyStatus)
+//   - the WS matchmaking.party.status handler
+//   - every push point that notifies party members of a membership change (invite created,
+//     invite accepted, party left) — called once per affected member, since playerId and the
+//     invite lists are member-specific even though most fields are party-wide.
+func buildPartyStatusPayload(ctx context.Context, mmDB *server.Database, playerDB *server.Database, playerID string) (map[string]any, error) {
+	inbound, err := listInvitesForPlayer(ctx, mmDB, playerDB, playerID, true)
 	if err != nil {
-		fmt.Printf("[DEBUG][partyStatus] findPartyForPlayer failed playerId=%s err=%v\n", playerID, err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
+		return nil, err
+	}
+	outbound, err := listInvitesForPlayer(ctx, mmDB, playerDB, playerID, false)
+	if err != nil {
+		return nil, err
+	}
+
+	partyID, err := findPartyForPlayer(ctx, mmDB, playerID)
+	if err != nil {
+		return nil, err
 	}
 	if partyID == "" {
-		fmt.Printf("[DEBUG][partyStatus] player not in party playerId=%s inbound=%d outbound=%d\n", playerID, len(inbound), len(outbound))
-		response.Header().Set("Content-Type", "application/json")
-		response.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(response).Encode(map[string]any{
+		return map[string]any{
 			"status":          "ok",
 			"playerId":        playerID,
 			"inParty":         false,
 			"inboundInvites":  inbound,
 			"outboundInvites": outbound,
-		})
-		return
+		}, nil
 	}
 
-	members, err := listPartyMembers(request.Context(), mmDB, partyID)
+	members, err := listPartyMembers(ctx, mmDB, partyID)
 	if err != nil {
-		fmt.Printf("[DEBUG][partyStatus] listPartyMembers failed partyId=%s err=%v\n", partyID, err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 
 	memberPayload := make([]map[string]string, 0, len(members))
 	for _, memberID := range members {
 		username := memberID
-		nameRows, queryErr := server.SubmitQuery(request.Context(), playerDB.DB, "SELECT account_name FROM players WHERE id = $1", memberID)
+		nameRows, queryErr := server.SubmitQuery(ctx, playerDB.DB, "SELECT account_name FROM players WHERE id = $1", memberID)
 		if queryErr != nil {
-			fmt.Printf("[DEBUG][partyStatus] member name lookup failed memberId=%s err=%v\n", memberID, queryErr)
-			response.WriteHeader(http.StatusInternalServerError)
-			return
+			return nil, queryErr
 		}
 		if nameRows.Next() {
 			_ = nameRows.Scan(&username)
 		}
 		if closeErr := nameRows.Close(); closeErr != nil {
-			fmt.Printf("[DEBUG][partyStatus] member name rows close failed memberId=%s err=%v\n", memberID, closeErr)
-			response.WriteHeader(http.StatusInternalServerError)
-			return
+			return nil, closeErr
 		}
 		memberPayload = append(memberPayload, map[string]string{
 			"playerId": memberID,
@@ -572,51 +593,37 @@ func (api *MatchmakingAPI) handlePartyStatus(response http.ResponseWriter, reque
 		})
 	}
 
-	primaryPlayerID, err := getPartyPrimaryPlayer(request.Context(), mmDB, partyID)
+	primaryPlayerID, err := getPartyPrimaryPlayer(ctx, mmDB, partyID)
 	if err != nil {
-		fmt.Printf("[DEBUG][partyStatus] getPartyPrimaryPlayer failed partyId=%s err=%v\n", partyID, err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 
-	partyFaction, err := getPartyFaction(request.Context(), mmDB, partyID)
+	partyFaction, err := getPartyFaction(ctx, mmDB, partyID)
 	if err != nil {
-		fmt.Printf("[DEBUG][partyStatus] getPartyFaction failed partyId=%s err=%v\n", partyID, err)
-		response.WriteHeader(http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 
 	allMembersHaveActiveCharacter := false
 	{
-		rows, queryErr := server.SubmitQuery(request.Context(), mmDB.DB,
+		rows, queryErr := server.SubmitQuery(ctx, mmDB.DB,
 			"SELECT COUNT(*) FROM party_players WHERE party_id = $1 AND active_character_id IS NULL", partyID)
 		if queryErr != nil {
-			fmt.Printf("[DEBUG][partyStatus] allMembersHaveActiveCharacter query failed partyId=%s err=%v\n", partyID, queryErr)
-			response.WriteHeader(http.StatusInternalServerError)
-			return
+			return nil, queryErr
 		}
 		var missingCount int
 		if rows.Next() {
 			if scanErr := rows.Scan(&missingCount); scanErr != nil {
 				_ = rows.Close()
-				fmt.Printf("[DEBUG][partyStatus] allMembersHaveActiveCharacter scan failed partyId=%s err=%v\n", partyID, scanErr)
-				response.WriteHeader(http.StatusInternalServerError)
-				return
+				return nil, scanErr
 			}
 		}
 		if closeErr := rows.Close(); closeErr != nil {
-			fmt.Printf("[DEBUG][partyStatus] allMembersHaveActiveCharacter rows close failed partyId=%s err=%v\n", partyID, closeErr)
-			response.WriteHeader(http.StatusInternalServerError)
-			return
+			return nil, closeErr
 		}
 		allMembersHaveActiveCharacter = missingCount == 0
 	}
 
-	fmt.Printf("[DEBUG][partyStatus] request succeeded playerId=%s partyId=%s members=%d inbound=%d outbound=%d allMembersHaveActiveCharacter=%t\n", playerID, partyID, len(memberPayload), len(inbound), len(outbound), allMembersHaveActiveCharacter)
-
-	response.Header().Set("Content-Type", "application/json")
-	response.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(response).Encode(map[string]any{
+	return map[string]any{
 		"status":                        "ok",
 		"inParty":                       true,
 		"partyId":                       partyID,
@@ -627,7 +634,42 @@ func (api *MatchmakingAPI) handlePartyStatus(response http.ResponseWriter, reque
 		"members":                       memberPayload,
 		"inboundInvites":                inbound,
 		"outboundInvites":               outbound,
-	})
+	}, nil
+}
+
+// pushPartyStatusToMembers pushes a matchmaking.party.status update (via buildPartyStatusPayload)
+// to every current member of partyID. Called after movePlayerToParty/leaveParty succeed, so
+// members see membership/faction changes without polling. No-op if hub is unset.
+func (api *MatchmakingAPI) pushPartyStatusToMembers(ctx context.Context, mmDB *server.Database, playerDB *server.Database, partyID string) {
+	if api.hub == nil || partyID == "" {
+		return
+	}
+	members, err := listPartyMembers(ctx, mmDB, partyID)
+	if err != nil {
+		return
+	}
+	for _, memberID := range members {
+		payload, err := buildPartyStatusPayload(ctx, mmDB, playerDB, memberID)
+		if err != nil {
+			continue
+		}
+		api.hub.SendTo(memberID, ws.OutboundMessage{Type: "matchmaking.party.status", OK: true, Payload: payload})
+	}
+}
+
+// pushPartyInviteCreated notifies toPlayerID (the invitee) of a freshly created party invite,
+// via a matchmaking.party.status push (their own buildPartyStatusPayload output — for a player
+// not yet in a party this still surfaces the new invite in inboundInvites). No-op if hub is
+// unset.
+func (api *MatchmakingAPI) pushPartyInviteCreated(ctx context.Context, mmDB *server.Database, playerDB *server.Database, toPlayerID string) {
+	if api.hub == nil || toPlayerID == "" {
+		return
+	}
+	payload, err := buildPartyStatusPayload(ctx, mmDB, playerDB, toPlayerID)
+	if err != nil {
+		return
+	}
+	api.hub.SendTo(toPlayerID, ws.OutboundMessage{Type: "matchmaking.party.status", OK: true, Payload: payload})
 }
 
 func playerExists(ctx context.Context, playerDB *server.Database, playerID string) (bool, error) {

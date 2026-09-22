@@ -3,6 +3,7 @@ package playerhandling
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -686,51 +687,74 @@ func (api *PlayerAPI) handleDeleteCharacter(response http.ResponseWriter, reques
 		return
 	}
 
-	// Authenticate using either session token or server token
-	useServerToken := false
-	var playerID string
-	var err error
-
+	// Authenticate using either session token or server token. The sessionToken branch's body
+	// (validate session -> delete character/active_characters rows -> sync party selection) is
+	// shared with the WS account.deleteCharacter handler via deleteCharacterBySessionToken, so
+	// there is a single source of truth for that path. The serverToken branch below is used by
+	// the dedicated game server binary directly over HTTP and is left untouched.
 	if deleteRequest.SessionToken != "" {
-		playerID, err = server.GetPlayerIDFromSession(deleteRequest.SessionToken)
-		if err != nil {
-			response.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(response).Encode(map[string]any{
-				"status":  "error",
-				"message": "invalid session token",
-				"error":   err.Error(),
-			})
-			return
-		}
-	} else if deleteRequest.ServerToken != "" {
-		mmDB, err := server.GetMMDB(request.Context())
-		if err != nil {
-			response.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(response).Encode(map[string]any{
-				"status":  "error",
-				"message": "database error",
-				"error":   err.Error(),
-			})
-			return
-		}
-
-		_, tokenErr := matchmaking.ValidateServerToken(request.Context(), mmDB, deleteRequest.ServerToken)
-		if tokenErr != nil {
-			response.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(response).Encode(map[string]any{
-				"status":  "error",
-				"message": "invalid server token",
-				"error":   tokenErr.Error(),
-			})
+		if _, err := deleteCharacterBySessionToken(request.Context(), deleteRequest.SessionToken, deleteRequest.CharacterID); err != nil {
+			switch {
+			case errors.Is(err, errInvalidSessionTokenForDelete):
+				response.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(response).Encode(map[string]any{
+					"status":  "error",
+					"message": "invalid session token",
+					"error":   err.Error(),
+				})
+			case errors.Is(err, errCharacterNotFoundForDelete):
+				response.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(response).Encode(map[string]any{
+					"status":  "error",
+					"message": "character not found",
+				})
+			default:
+				response.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(response).Encode(map[string]any{
+					"status":  "error",
+					"message": "database error",
+					"error":   err.Error(),
+				})
+			}
 			return
 		}
 
-		useServerToken = true
-	} else {
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":      "ok",
+			"characterId": deleteRequest.CharacterID,
+			"message":     "character deleted",
+		})
+		return
+	}
+
+	if deleteRequest.ServerToken == "" {
 		response.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
 			"message": "either sessionToken or serverToken is required",
+		})
+		return
+	}
+
+	mmDB, err := server.GetMMDB(request.Context())
+	if err != nil {
+		response.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "database error",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	if _, tokenErr := matchmaking.ValidateServerToken(request.Context(), mmDB, deleteRequest.ServerToken); tokenErr != nil {
+		response.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"status":  "error",
+			"message": "invalid server token",
+			"error":   tokenErr.Error(),
 		})
 		return
 	}
@@ -746,12 +770,7 @@ func (api *PlayerAPI) handleDeleteCharacter(response http.ResponseWriter, reques
 		return
 	}
 
-	var result interface{ RowsAffected() (int64, error) }
-	if useServerToken {
-		result, err = server.SubmitExec(context.Background(), db.DB, "DELETE FROM characters WHERE character_id = $1", deleteRequest.CharacterID)
-	} else {
-		result, err = server.SubmitExec(context.Background(), db.DB, "DELETE FROM characters WHERE character_id = $1 AND player_id = $2", deleteRequest.CharacterID, playerID)
-	}
+	result, err := server.SubmitExec(context.Background(), db.DB, "DELETE FROM characters WHERE character_id = $1", deleteRequest.CharacterID)
 	if err != nil {
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
@@ -782,18 +801,6 @@ func (api *PlayerAPI) handleDeleteCharacter(response http.ResponseWriter, reques
 		return
 	}
 
-	if !useServerToken {
-		if err := server.ClearPartyActiveCharacterSelection(request.Context(), playerID); err != nil {
-			response.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(response).Encode(map[string]any{
-				"status":  "error",
-				"message": "failed to sync party active character",
-				"error":   err.Error(),
-			})
-			return
-		}
-	}
-
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(response).Encode(map[string]any{
@@ -801,6 +808,49 @@ func (api *PlayerAPI) handleDeleteCharacter(response http.ResponseWriter, reques
 		"characterId": deleteRequest.CharacterID,
 		"message":     "character deleted",
 	})
+}
+
+var (
+	errInvalidSessionTokenForDelete = errors.New("invalid session token")
+	errCharacterNotFoundForDelete   = errors.New("character not found")
+)
+
+// deleteCharacterBySessionToken deletes a character owned by the player resolved from
+// sessionToken (also clearing the active_characters row and any party active-character
+// selection). It is the sessionToken-branch body of handleDeleteCharacter, extracted so both
+// the HTTP handler and the WS account.deleteCharacter handler call the same code rather than
+// two copies drifting apart. The serverToken branch (used by the dedicated game server binary)
+// is intentionally not covered here — it stays HTTP-only and is untouched.
+func deleteCharacterBySessionToken(ctx context.Context, sessionToken string, characterID string) (string, error) {
+	playerID, err := server.GetPlayerIDFromSession(sessionToken)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errInvalidSessionTokenForDelete, err)
+	}
+
+	db, err := server.GetDatabase(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	result, err := server.SubmitExec(ctx, db.DB, "DELETE FROM characters WHERE character_id = $1 AND player_id = $2", characterID, playerID)
+	if err != nil {
+		return "", err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return "", errCharacterNotFoundForDelete
+	}
+
+	if _, err := server.SubmitExec(ctx, db.DB, "DELETE FROM active_characters WHERE character_id = $1", characterID); err != nil {
+		return "", err
+	}
+
+	if err := server.ClearPartyActiveCharacterSelection(ctx, playerID); err != nil {
+		return "", err
+	}
+
+	return playerID, nil
 }
 
 func createCharacterID() (string, error) {

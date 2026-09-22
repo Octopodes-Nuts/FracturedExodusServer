@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	server "fracturedexodusserver/server"
+	ws "fracturedexodusserver/server/ws"
 )
 
 const (
@@ -79,6 +80,7 @@ type MatchmakingAPI struct {
 	rng                 *rand.Rand
 	resolveQueueContext func(ctx context.Context, sessionToken string) (QueueContext, error)
 	stopCh              chan struct{}
+	hub                 *ws.Hub
 }
 
 // NewMatchmakingAPI creates and starts a MatchmakingAPI.
@@ -150,6 +152,15 @@ func (api *MatchmakingAPI) SetMatchStartWaitForTesting(wait time.Duration) {
 	}
 	api.mu.Lock()
 	api.matchStartWait = wait
+	api.mu.Unlock()
+}
+
+// SetHub wires up the WebSocket push hub. Until this is called, api.hub is nil and every push
+// call site is a no-op (see e.g. pushTicketStatuses) — existing callers/tests that construct a
+// MatchmakingAPI without a hub keep working unchanged.
+func (api *MatchmakingAPI) SetHub(hub *ws.Hub) {
+	api.mu.Lock()
+	api.hub = hub
 	api.mu.Unlock()
 }
 
@@ -283,7 +294,8 @@ func (api *MatchmakingAPI) startClaimedMatch(ctx context.Context, mmDB *server.D
 	players, loadErr := loadPlayersForRows(ctx, selectedRows)
 	if loadErr != nil {
 		_ = updateTicketStatuses(ctx, mmDB, selectedTicketIDs, "error", nil)
-		api.setTicketStateForIDs(selectedRows, "error", nil, loadErr.Error())
+		statuses := api.setTicketStateForIDs(selectedRows, "error", nil, loadErr.Error())
+		api.pushTicketStatuses(statuses)
 		return
 	}
 
@@ -292,17 +304,50 @@ func (api *MatchmakingAPI) startClaimedMatch(ctx context.Context, mmDB *server.D
 	cancel()
 	if startErr != nil {
 		_ = updateTicketStatuses(ctx, mmDB, selectedTicketIDs, "error", nil)
-		api.setTicketStateForIDs(selectedRows, "error", nil, startErr.Error())
+		statuses := api.setTicketStateForIDs(selectedRows, "error", nil, startErr.Error())
+		api.pushTicketStatuses(statuses)
 		return
 	}
 
 	if err := persistMatchResult(ctx, mmDB, instance, selectedRows); err != nil {
 		_ = updateTicketStatuses(ctx, mmDB, selectedTicketIDs, "error", nil)
-		api.setTicketStateForIDs(selectedRows, "error", nil, err.Error())
+		statuses := api.setTicketStateForIDs(selectedRows, "error", nil, err.Error())
+		api.pushTicketStatuses(statuses)
 		return
 	}
 
-	api.setTicketStateForIDs(selectedRows, "matched", &instance, "")
+	statuses := api.setTicketStateForIDs(selectedRows, "matched", &instance, "")
+	api.pushTicketStatuses(statuses)
+}
+
+// pushTicketStatuses pushes a matchmaking.status update to each affected player, mirroring the
+// payload shape handleStatus returns for a single ticket. Called by the matchLoop goroutine
+// after setTicketStateForIDs has already returned (i.e. after its internal api.mu.Unlock() has
+// run) so a slow/stuck client's buffered send channel can never stall matchmaking for everyone.
+func (api *MatchmakingAPI) pushTicketStatuses(statuses []ticketStatus) {
+	if api.hub == nil {
+		return
+	}
+	for _, status := range statuses {
+		matchedPort := ""
+		if status.Instance != nil {
+			matchedPort = status.Instance.Port
+		}
+		api.hub.SendTo(status.PlayerID, ws.OutboundMessage{
+			Type: "matchmaking.status",
+			OK:   true,
+			Payload: map[string]any{
+				"status":   status.Status,
+				"ticketId": status.TicketID,
+				"partyId":  status.PartyID,
+				"playerId": status.PlayerID,
+				"username": status.Username,
+				"region":   api.region,
+				"port":     matchedPort,
+				"error":    status.Error,
+			},
+		})
+	}
 }
 
 func (api *MatchmakingAPI) generateTicketLocked(ctx context.Context, mmDB *server.Database) (string, error) {
@@ -328,10 +373,14 @@ func (api *MatchmakingAPI) randomSuffix() string {
 	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), api.rng.Intn(100000))
 }
 
-func (api *MatchmakingAPI) setTicketStateForIDs(rows []queueTicketRow, status string, instance *server.GameInstance, ticketErr string) {
+// setTicketStateForIDs updates in-memory ticket state for rows and returns a ticketStatus per
+// row describing what was just set, so the caller can push matchmaking.status updates after
+// this function returns (i.e. after api.mu is unlocked below).
+func (api *MatchmakingAPI) setTicketStateForIDs(rows []queueTicketRow, status string, instance *server.GameInstance, ticketErr string) []ticketStatus {
 	api.mu.Lock()
 	defer api.mu.Unlock()
 
+	statuses := make([]ticketStatus, 0, len(rows))
 	for _, row := range rows {
 		ticket, exists := api.tickets[row.TicketID]
 		if !exists {
@@ -352,7 +401,18 @@ func (api *MatchmakingAPI) setTicketStateForIDs(rows []queueTicketRow, status st
 			copyInstance := *instance
 			ticket.instance = &copyInstance
 		}
+
+		statuses = append(statuses, ticketStatus{
+			PlayerID: ticket.playerID,
+			Username: ticket.player.Username,
+			TicketID: row.TicketID,
+			Status:   ticket.status,
+			PartyID:  ticket.partyID,
+			Instance: ticket.instance,
+			Error:    ticket.error,
+		})
 	}
+	return statuses
 }
 
 func removeTicket(queue []matchGroup, ticketID string) []matchGroup {

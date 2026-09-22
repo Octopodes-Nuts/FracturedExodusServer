@@ -13,6 +13,9 @@ import (
 	server "fracturedexodusserver/server"
 	mm "fracturedexodusserver/server/matchmaking"
 	playerhandling "fracturedexodusserver/server/playerhandling"
+	wstransport "fracturedexodusserver/server/ws"
+
+	"github.com/gorilla/websocket"
 )
 
 func main() {
@@ -94,6 +97,30 @@ func startServer() {
 	playerAPI.RegisterRoutes(mux)
 	gameServerAPI.RegisterRoutes(mux)
 	matchmakingAPI.RegisterRoutes(mux)
+
+	// WebSocket transport (/ws), additive alongside the HTTP routes above: same process, same
+	// port, same mux. Existing HTTP endpoints are untouched and keep working exactly as today.
+	hub := wstransport.NewHub()
+	matchmakingAPI.SetHub(hub)
+	playerAPI.SetHub(hub)
+
+	wsRouter := wstransport.Router{}
+	for msgType, handler := range playerAPI.WSHandlers() {
+		wsRouter[msgType] = handler
+	}
+	for msgType, handler := range matchmakingAPI.WSHandlers() {
+		wsRouter[msgType] = handler
+	}
+
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		// Godot's WebSocketPeer client does not set an Origin header consistent with browser
+		// same-origin policy, and this API has no cookie-based session to protect against
+		// cross-site use, so origin checking is disabled here rather than misconfigured.
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	wstransport.RegisterHandlers(mux, upgrader, wsRouter)
 
 	httpServer := &http.Server{
 		Addr:              ":" + port,

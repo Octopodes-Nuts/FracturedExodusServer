@@ -5,12 +5,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	server "fracturedexodusserver/server"
+	ws "fracturedexodusserver/server/ws"
 
 	"github.com/google/uuid"
 )
@@ -214,11 +216,18 @@ func (api *PlayerAPI) handleAccountInfo(response http.ResponseWriter, request *h
 	}
 	fmt.Printf("[DEBUG][accountInfo] session validated for playerId=%s\n", accountInfoRequest.PlayerID)
 
-	query = "SELECT account_level, account_experience FROM players WHERE id = $1"
-	fmt.Printf("[DEBUG][accountInfo] querying account stats for playerId=%s\n", accountInfoRequest.PlayerID)
-	rows, err = server.SubmitQuery(context.Background(), db.DB, query, accountInfoRequest.PlayerID)
+	payload, err := api.buildAccountInfoPayload(context.Background(), accountInfoRequest.PlayerID)
 	if err != nil {
-		fmt.Printf("[DEBUG][accountInfo] account stats query failed: %v\n", err)
+		if errors.Is(err, errAccountNotFound) {
+			fmt.Printf("[DEBUG][accountInfo] player not found for playerId=%s\n", accountInfoRequest.PlayerID)
+			response.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"status":  "error",
+				"message": "player not found",
+			})
+			return
+		}
+		fmt.Printf("[DEBUG][accountInfo] buildAccountInfoPayload failed playerId=%s err=%v\n", accountInfoRequest.PlayerID, err)
 		response.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"status":  "error",
@@ -227,114 +236,128 @@ func (api *PlayerAPI) handleAccountInfo(response http.ResponseWriter, request *h
 		})
 		return
 	}
-	defer rows.Close()
+
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(response).Encode(payload)
+}
+
+var errAccountNotFound = errors.New("player not found")
+
+// buildAccountInfoPayload builds the full account info response payload (level/experience,
+// accepted friends, inbound/outbound pending friend requests) for playerID. It is the single
+// source of truth for that shape, shared by:
+//   - handleAccountInfo (POST /player/account/info), after validating sessionToken+playerId
+//   - the WS account.getInfo / account.getInfoUpdate handlers, using the conn's bound identity
+//   - pushAccountInfoUpdated, which pushes this same shape as an account.infoUpdated event
+func (api *PlayerAPI) buildAccountInfoPayload(ctx context.Context, playerID string) (map[string]any, error) {
+	db, err := server.GetDatabase(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	query := "SELECT account_level, account_experience FROM players WHERE id = $1"
+	rows, err := server.SubmitQuery(ctx, db.DB, query, playerID)
+	if err != nil {
+		return nil, err
+	}
 	var accountLevel int
 	var experience int
 	if rows.Next() {
 		if err := rows.Scan(&accountLevel, &experience); err != nil {
-			fmt.Printf("[DEBUG][accountInfo] failed scanning account stats: %v\n", err)
-			return
+			_ = rows.Close()
+			return nil, err
 		}
 	} else {
-		fmt.Printf("[DEBUG][accountInfo] player not found for playerId=%s\n", accountInfoRequest.PlayerID)
-		response.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":  "error",
-			"message": "player not found",
-		})
-		return
+		_ = rows.Close()
+		return nil, errAccountNotFound
 	}
-	fmt.Printf("[DEBUG][accountInfo] account stats loaded level=%d experience=%d\n", accountLevel, experience)
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 
 	query = `SELECT p.id, p.account_name FROM friend_connections fc
 		JOIN players p ON p.id = CASE WHEN fc.player_one_id = $1 THEN fc.player_two_id ELSE fc.player_one_id END
 		WHERE (fc.player_one_id = $1 OR fc.player_two_id = $1) AND fc.status = 'accepted'`
-	fmt.Printf("[DEBUG][accountInfo] querying accepted friends for playerId=%s\n", accountInfoRequest.PlayerID)
-	rows, err = server.SubmitQuery(context.Background(), db.DB, query, accountInfoRequest.PlayerID)
+	rows, err = server.SubmitQuery(ctx, db.DB, query, playerID)
 	if err != nil {
-		fmt.Printf("[DEBUG][accountInfo] accepted friends query failed: %v\n", err)
-		response.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":  "error",
-			"message": "database query failed",
-			"error":   err.Error(),
-		})
-		return
+		return nil, err
 	}
-	defer rows.Close()
 	friends := []map[string]string{}
 	for rows.Next() {
 		var friendID, friendUsername string
 		if err := rows.Scan(&friendID, &friendUsername); err != nil {
-			fmt.Printf("[DEBUG][accountInfo] failed scanning accepted friend row: %v\n", err)
-			return
+			_ = rows.Close()
+			return nil, err
 		}
 		friends = append(friends, map[string]string{"accountId": friendID, "username": friendUsername})
 	}
-	fmt.Printf("[DEBUG][accountInfo] accepted friends count=%d\n", len(friends))
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 
 	friendRequests := []string{}
 	query = "SELECT player_one_id FROM friend_connections WHERE player_two_id = $1 AND status = 'pending'"
-	fmt.Printf("[DEBUG][accountInfo] querying inbound friend requests for playerId=%s\n", accountInfoRequest.PlayerID)
-	rows, err = server.SubmitQuery(context.Background(), db.DB, query, accountInfoRequest.PlayerID)
+	rows, err = server.SubmitQuery(ctx, db.DB, query, playerID)
 	if err != nil {
-		fmt.Printf("[DEBUG][accountInfo] inbound friend requests query failed: %v\n", err)
-		response.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":  "error",
-			"message": "database query failed",
-			"error":   err.Error(),
-		})
-		return
+		return nil, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var friendRequestID string
 		if err := rows.Scan(&friendRequestID); err != nil {
-			fmt.Printf("[DEBUG][accountInfo] failed scanning inbound friend request row: %v\n", err)
-			return
+			_ = rows.Close()
+			return nil, err
 		}
 		friendRequests = append(friendRequests, friendRequestID)
 	}
-	fmt.Printf("[DEBUG][accountInfo] inbound friend requests count=%d\n", len(friendRequests))
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 
 	pendingFriendRequests := []string{}
 	query = "SELECT player_two_id FROM friend_connections WHERE player_one_id = $1 AND status = 'pending'"
-	fmt.Printf("[DEBUG][accountInfo] querying outbound friend requests for playerId=%s\n", accountInfoRequest.PlayerID)
-	rows, err = server.SubmitQuery(context.Background(), db.DB, query, accountInfoRequest.PlayerID)
+	rows, err = server.SubmitQuery(ctx, db.DB, query, playerID)
 	if err != nil {
-		fmt.Printf("[DEBUG][accountInfo] outbound friend requests query failed: %v\n", err)
-		response.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"status":  "error",
-			"message": "database query failed",
-			"error":   err.Error(),
-		})
-		return
+		return nil, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var pendingFriendRequestID string
 		if err := rows.Scan(&pendingFriendRequestID); err != nil {
-			fmt.Printf("[DEBUG][accountInfo] failed scanning outbound friend request row: %v\n", err)
-			return
+			_ = rows.Close()
+			return nil, err
 		}
 		pendingFriendRequests = append(pendingFriendRequests, pendingFriendRequestID)
 	}
-	fmt.Printf("[DEBUG][accountInfo] outbound friend requests count=%d\n", len(pendingFriendRequests))
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 
-	response.Header().Set("Content-Type", "application/json")
-	response.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(response).Encode(map[string]any{
+	return map[string]any{
 		"status":                "ok",
-		"accountId":             accountInfoRequest.PlayerID,
+		"accountId":             playerID,
 		"accountLevel":          accountLevel,
 		"accountExperience":     experience,
 		"buildVersion":          api.buildVersion,
 		"friends":               friends,
 		"friendRequests":        friendRequests,
 		"pendingFriendRequests": pendingFriendRequests,
-	})
+	}, nil
+}
+
+// pushAccountInfoUpdated pushes an account.infoUpdated event to playerID with the same payload
+// shape handleAccountInfo/account.getInfo returns, so the client's friend list / pending
+// requests can update without polling. Best-effort: swallows errors (the info will still be
+// fetched correctly on next explicit account.getInfo/account.getInfoUpdate call) and is a
+// no-op if hub is unset.
+func (api *PlayerAPI) pushAccountInfoUpdated(ctx context.Context, playerID string) {
+	if api.hub == nil || playerID == "" {
+		return
+	}
+	payload, err := api.buildAccountInfoPayload(ctx, playerID)
+	if err != nil {
+		return
+	}
+	api.hub.SendTo(playerID, ws.OutboundMessage{Type: "account.infoUpdated", OK: true, Payload: payload})
 }
 
 func handleCreateAccount(response http.ResponseWriter, request *http.Request) {
