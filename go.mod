@@ -4,6 +4,8 @@ go 1.24.0
 
 require github.com/jackc/pgx/v5 v5.8.0
 
+require github.com/gorilla/websocket v1.5.3
+
 require (
 	github.com/google/uuid v1.3.0 // added for UUID generation in player ID creation
 	github.com/jackc/pgpassfile v1.0.0 // indirect

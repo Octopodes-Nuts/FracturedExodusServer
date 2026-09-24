@@ -24,6 +24,8 @@ type GameServerConfig struct {
 	BuildContext string
 	GamePort     string
 	Protocol     string
+	PublicHost   string
+	Localhost    bool
 }
 
 func DefaultGameServerConfig() GameServerConfig {
@@ -33,6 +35,7 @@ func DefaultGameServerConfig() GameServerConfig {
 		BuildContext: getEnvOrDefault("GAME_BUILD_CONTEXT", "."),
 		GamePort:     getEnvOrDefault("GAME_PORT", "8080"),
 		Protocol:     getEnvOrDefault("GAME_PROTOCOL", "udp"),
+		PublicHost:   getEnvOrDefault("GAME_SERVER_PUBLIC_HOST", "127.0.0.1"),
 	}
 }
 
@@ -101,7 +104,7 @@ func (manager *GameServerManager) StartGameInstance(ctx context.Context, players
 		ContainerID:   containerID,
 		ContainerName: containerName,
 		Image:         manager.config.ImageName,
-		Host:          "127.0.0.1",
+		Host:          manager.joinHost(),
 		Port:          hostPort,
 		Protocol:      manager.config.Protocol,
 		JoinKey:       joinKey,
@@ -117,6 +120,15 @@ func (manager *GameServerManager) StartGameInstance(ctx context.Context, players
 	manager.streamContainerLogs(containerName)
 
 	return instance, nil
+}
+
+// joinHost is the address reported to clients. --localhost forces loopback for local dev;
+// otherwise it comes from GAME_SERVER_PUBLIC_HOST.
+func (manager *GameServerManager) joinHost() string {
+	if manager.config.Localhost {
+		return "127.0.0.1"
+	}
+	return manager.config.PublicHost
 }
 
 func (manager *GameServerManager) buildImage(ctx context.Context) error {
@@ -146,12 +158,12 @@ func (manager *GameServerManager) runContainer(ctx context.Context, containerNam
 	var cmd *exec.Cmd
 	if requestedPort != "" {
 		portMapping := fmt.Sprintf("%s:%s", requestedPort, containerPort)
-		args := []string{"run", "-d", "--rm", "-p", portMapping, "--name", containerName}
+		args := []string{"run", "-d", "--rm", "--add-host=host.docker.internal:host-gateway", "-p", portMapping, "--name", containerName}
 		args = append(args, envArgs...)
 		args = append(args, manager.config.ImageName)
 		cmd = exec.CommandContext(ctx, "docker", args...)
 	} else {
-		args := []string{"run", "-d", "--rm", "-P", "--name", containerName}
+		args := []string{"run", "-d", "--rm", "--add-host=host.docker.internal:host-gateway", "-P", "--name", containerName}
 		args = append(args, envArgs...)
 		args = append(args, manager.config.ImageName)
 		cmd = exec.CommandContext(ctx, "docker", args...)
