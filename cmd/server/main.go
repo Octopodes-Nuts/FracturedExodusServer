@@ -24,6 +24,7 @@ func main() {
 	resetDB := flag.Bool("reset_db", false, "reset the database")
 	initMMDB := flag.Bool("init_mm_db", false, "initialize the matchmaking database")
 	resetMMDB := flag.Bool("reset_mm_db", false, "reset the matchmaking database")
+	localhost := flag.Bool("localhost", false, "local dev: report 127.0.0.1 as the game server join address (otherwise GAME_SERVER_PUBLIC_HOST is used)")
 	flag.Parse()
 
 	if !*runServer && !*initDB && !*resetDB && !*initMMDB && !*resetMMDB {
@@ -77,11 +78,11 @@ func main() {
 	}
 
 	if *runServer {
-		startServer()
+		startServer(*localhost)
 	}
 }
 
-func startServer() {
+func startServer(localhost bool) {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8000"
@@ -89,7 +90,9 @@ func startServer() {
 
 	api := server.NewServerAPI("FracturedExodusServer")
 	playerAPI := playerhandling.NewPlayerAPI("dev")
-	gameServerManager := server.NewGameServerManager(server.DefaultGameServerConfig())
+	gameServerConfig := server.DefaultGameServerConfig()
+	gameServerConfig.Localhost = localhost
+	gameServerManager := server.NewGameServerManager(gameServerConfig)
 	gameServerAPI := server.NewGameServerAPI(gameServerManager)
 	matchmakingAPI := mm.NewMatchmakingAPI("NA", gameServerManager)
 	mux := http.NewServeMux()
